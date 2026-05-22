@@ -22,15 +22,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS players_user_name_unique
 -- RLS (Row Level Security) — cada usuário vê apenas seus próprios jogadores
 ALTER TABLE players ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "players: owner select" ON players;
 CREATE POLICY "players: owner select" ON players
   FOR SELECT USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "players: owner insert" ON players;
 CREATE POLICY "players: owner insert" ON players
   FOR INSERT WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "players: owner update" ON players;
 CREATE POLICY "players: owner update" ON players
   FOR UPDATE USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "players: owner delete" ON players;
 CREATE POLICY "players: owner delete" ON players
   FOR DELETE USING (auth.uid() = user_id);
 
@@ -51,15 +55,19 @@ CREATE TABLE IF NOT EXISTS matches (
 
 ALTER TABLE matches ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "matches: read by code" ON matches;
 CREATE POLICY "matches: read by code" ON matches
   FOR SELECT USING (true); -- acesso por código, qualquer autenticado pode ler
 
+DROP POLICY IF EXISTS "matches: creator insert" ON matches;
 CREATE POLICY "matches: creator insert" ON matches
   FOR INSERT WITH CHECK (auth.uid() = creator_id);
 
+DROP POLICY IF EXISTS "matches: creator update" ON matches;
 CREATE POLICY "matches: creator update" ON matches
   FOR UPDATE USING (auth.uid() = creator_id);
 
+DROP POLICY IF EXISTS "matches: creator delete" ON matches;
 CREATE POLICY "matches: creator delete" ON matches
   FOR DELETE USING (auth.uid() = creator_id);
 
@@ -76,14 +84,17 @@ CREATE TABLE IF NOT EXISTS teams (
 
 ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "teams: read all" ON teams;
 CREATE POLICY "teams: read all" ON teams
   FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "teams: insert by match creator" ON teams;
 CREATE POLICY "teams: insert by match creator" ON teams
   FOR INSERT WITH CHECK (
     auth.uid() = (SELECT creator_id FROM matches WHERE id = match_id)
   );
 
+DROP POLICY IF EXISTS "teams: update by match creator" ON teams;
 CREATE POLICY "teams: update by match creator" ON teams
   FOR UPDATE USING (
     auth.uid() = (SELECT creator_id FROM matches WHERE id = match_id)
@@ -102,9 +113,11 @@ CREATE TABLE IF NOT EXISTS match_players (
 
 ALTER TABLE match_players ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "match_players: read all" ON match_players;
 CREATE POLICY "match_players: read all" ON match_players
   FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "match_players: creator write" ON match_players;
 CREATE POLICY "match_players: creator write" ON match_players
   FOR ALL USING (
     auth.uid() = (SELECT creator_id FROM matches WHERE id = match_id)
@@ -125,9 +138,11 @@ CREATE TABLE IF NOT EXISTS match_events (
 
 ALTER TABLE match_events ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "match_events: read all" ON match_events;
 CREATE POLICY "match_events: read all" ON match_events
   FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "match_events: authenticated write" ON match_events;
 CREATE POLICY "match_events: authenticated write" ON match_events
   FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);
 
@@ -147,9 +162,11 @@ CREATE TABLE IF NOT EXISTS player_stats (
 
 ALTER TABLE player_stats ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "player_stats: read all" ON player_stats;
 CREATE POLICY "player_stats: read all" ON player_stats
   FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "player_stats: owner write" ON player_stats;
 CREATE POLICY "player_stats: owner write" ON player_stats
   FOR ALL USING (
     auth.uid() = (SELECT user_id FROM players WHERE id = player_id)
