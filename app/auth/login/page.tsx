@@ -136,7 +136,7 @@ export default function LoginPage() {
         <h1 className="text-white text-3xl font-black font-display tracking-wide">
           FUTEBOM APP
         </h1>
-        <p className="text-[#64748B] text-sm mt-1">Gerencie suas peladas</p>
+        <p className="text-[#64748B] text-sm mt-1">Gerencie suas partidas</p>
       </div>
 
       {/* Card */}

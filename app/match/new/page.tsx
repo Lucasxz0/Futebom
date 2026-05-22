@@ -148,7 +148,7 @@ export default function NewMatchPage() {
   const { showToast } = useToast();
   const { players, permanentPlayers, casualPlayers, loading } = usePlayers();
 
-  const [matchName, setMatchName] = useState("Pelada");
+  const [matchName, setMatchName] = useState("Futebom");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [teamSize, setTeamSize] = useState(5);
   const [creating, setCreating] = useState(false);
@@ -199,7 +199,7 @@ export default function NewMatchPage() {
 
     setCreating(true);
     const { data, error } = await createMatch({
-      name: matchName.trim() || "Pelada",
+      name: matchName.trim() || "Futebom",
       playerIds: Array.from(selectedIds),
       teamSize,
     });
@@ -257,7 +257,7 @@ export default function NewMatchPage() {
             type="text"
             value={matchName}
             onChange={(e) => setMatchName(e.target.value)}
-            placeholder="Ex: Pelada de quinta"
+            placeholder="Ex: Jogo de quinta"
             maxLength={40}
             className="w-full bg-[#1E293B] border border-[#334155] rounded-xl px-4 py-3 text-[#F1F5F9] placeholder-[#475569] focus:outline-none focus:border-[#1D4ED8] focus:ring-1 focus:ring-[#1D4ED8] transition-colors text-base"
             style={{ minHeight: "52px" }}

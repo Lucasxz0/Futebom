@@ -101,7 +101,7 @@ export async function createMatch(
     .from("matches")
     .insert({
       creator_id: user.id,
-      name: input.name.trim() || "Pelada",
+      name: input.name.trim() || "Futebom",
       access_code: accessCode,
       status: "waiting",
     })

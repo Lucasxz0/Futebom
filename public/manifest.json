@@ -1,7 +1,7 @@
 {
-  "name": "Pelada App",
-  "short_name": "Pelada",
-  "description": "Gerencie suas peladas de futebol com placar em tempo real",
+  "name": "Futebom App",
+  "short_name": "Futebom",
+  "description": "Gerencie suas partidas de futebol com placar em tempo real",
   "start_url": "/dashboard",
   "display": "standalone",
   "orientation": "portrait",

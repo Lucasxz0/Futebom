@@ -37,10 +37,10 @@ function AccessCodeBox({ code }: { code: string }) {
   }
 
   async function share() {
-    const text = `Entre na pelada com o código: ${code}\n⚽ Abra o Pelada App e digite o código para participar!`;
+    const text = `Entre na partida com o código: ${code}\n⚽ Abra o Futebom App e digite o código para participar!`;
     if (navigator.share) {
       try {
-        await navigator.share({ title: "Pelada App", text });
+        await navigator.share({ title: "Futebom App", text });
       } catch {
         // User dismissed
       }

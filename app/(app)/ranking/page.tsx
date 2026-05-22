@@ -163,7 +163,7 @@ export default function RankingPage() {
           <Trophy size={24} className="text-[#EAB308]" />
           <h1 className="text-[#F1F5F9] text-2xl font-bold font-display">Ranking</h1>
         </div>
-        <p className="text-[#64748B] text-sm">Top jogadores de todas as suas peladas</p>
+        <p className="text-[#64748B] text-sm">Top jogadores de todas as suas partidas</p>
       </div>
 
       {/* Sort tabs */}

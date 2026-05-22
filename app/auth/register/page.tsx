@@ -80,7 +80,7 @@ export default function RegisterPage() {
       <div className="text-center mb-8">
         <div className="text-6xl mb-3">⚽</div>
         <h1 className="text-white text-3xl font-black font-display tracking-wide">
-          PELADA APP
+          FUTEBOM APP
         </h1>
         <p className="text-[#64748B] text-sm mt-1">Crie sua conta gratuita</p>
       </div>

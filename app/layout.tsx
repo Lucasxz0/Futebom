@@ -27,15 +27,15 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "Pelada App — Gerenciador de Peladas",
+  title: "Futebom App — Gerenciador de Partidas",
   description:
-    "Gerencie suas peladas de futebol: sorteio de times, placar em tempo real, estatísticas e ranking de jogadores.",
-  keywords: ["pelada", "futebol", "gerenciador", "sorteio de times", "placar"],
+    "Gerencie suas partidas de futebol: sorteio de times, placar em tempo real, estatísticas e ranking de jogadores.",
+  keywords: ["futebom", "futebol", "gerenciador", "sorteio de times", "placar", "partida"],
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Pelada App",
+    title: "Futebom App",
   },
 };
 

@@ -606,7 +606,7 @@ export default function PlayersPage() {
                   Nenhum jogador ainda
                 </h3>
                 <p className="text-[#64748B] text-sm mb-6 max-w-xs mx-auto">
-                  Adicione os jogadores da sua pelada para usar nas partidas.
+                  Adicione os jogadores para usar nas partidas.
                 </p>
                 <Button variant="primary" onClick={() => openAdd()} className="mx-auto">
                   <Plus size={18} className="mr-1" />
