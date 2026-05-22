@@ -645,6 +645,41 @@ export async function performSubstitution(params: {
 }
 
 /**
+ * Add an existing player to the end of the queue for the given match.
+ */
+export async function addPlayerToQueue(
+  matchId: string,
+  playerId: string
+): Promise<{ error: string | null }> {
+  const supabase = createClient();
+
+  // Get current max queue_position
+  const { data: queueData } = await supabase
+    .from("match_players")
+    .select("queue_position")
+    .eq("match_id", matchId)
+    .is("team_id", null)
+    .order("queue_position", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const maxQueuePos = (queueData as any)?.queue_position ?? 0;
+
+  const { error } = await supabase
+    .from("match_players")
+    .insert({
+      match_id: matchId,
+      team_id: null,
+      player_id: playerId,
+      position: null,
+      queue_position: maxQueuePos + 1,
+    });
+
+  return { error: error?.message ?? null };
+}
+
+/**
  * Create the next match when the current one ends.
  *
  * - Winning team stays as-is

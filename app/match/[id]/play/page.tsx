@@ -37,7 +37,9 @@ import {
   MatchEvent,
   LivePlayer,
   Match,
+  addPlayerToQueue,
 } from "@/services/matchService";
+import { usePlayers } from "@/hooks/usePlayers";
 import { useToast } from "@/components/ui/Toast";
 import Button from "@/components/ui/Button";
 import SkeletonCard from "@/components/ui/SkeletonCard";
@@ -65,6 +67,10 @@ interface SubModalState {
 }
 
 interface NextMatchModalState {
+  open: boolean;
+}
+
+interface AddQueueModalState {
   open: boolean;
 }
 
@@ -638,6 +644,185 @@ function SubstitutionModal({
   );
 }
 
+// ─── Add Queue Modal ──────────────────────────────────────────────────────────
+
+function AddQueueModal({
+  onClose,
+  onAddExisting,
+  onCreateNew,
+  livePlayersIds,
+}: {
+  onClose: () => void;
+  onAddExisting: (playerId: string) => Promise<{ error: string | null }>;
+  onCreateNew: (name: string) => Promise<{ error: string | null }>;
+  livePlayersIds: Set<string>;
+}) {
+  const { permanentPlayers, casualPlayers, loading } = usePlayers();
+  const [search, setSearch] = useState("");
+  const [adding, setAdding] = useState(false);
+  const { showToast } = useToast();
+
+  const allPlayers = [...permanentPlayers, ...casualPlayers];
+  const availablePlayers = allPlayers.filter(
+    (p) => !livePlayersIds.has(p.id)
+  );
+
+  const filtered = search
+    ? availablePlayers.filter((p) =>
+        p.name.toLowerCase().includes(search.toLowerCase())
+      )
+    : availablePlayers;
+
+  const isExactMatch = allPlayers.some(
+    (p) => p.name.toLowerCase() === search.toLowerCase().trim()
+  );
+
+  async function handleAddExisting(p: { id: string; name: string }) {
+    setAdding(true);
+    const { error } = await onAddExisting(p.id);
+    setAdding(false);
+    if (error) {
+      showToast(error, "error");
+    } else {
+      showToast(`${p.name} entrou na fila!`, "success");
+      onClose();
+    }
+  }
+
+  async function handleCreateNew() {
+    const trimmed = search.trim();
+    if (!trimmed) return;
+    
+    // First check if a player with this name already exists in the user's list
+    // but maybe they are already in the match?
+    const existing = allPlayers.find(
+      (p) => p.name.toLowerCase() === trimmed.toLowerCase()
+    );
+
+    if (existing) {
+      if (livePlayersIds.has(existing.id)) {
+        showToast("Este jogador já está na partida ou na fila.", "error");
+        return;
+      }
+      // Re-use existing player
+      handleAddExisting(existing);
+      return;
+    }
+
+    setAdding(true);
+    const { error } = await onCreateNew(trimmed);
+    setAdding(false);
+    if (error) {
+      showToast(error, "error");
+    } else {
+      showToast(`${trimmed} criado e adicionado à fila!`, "success");
+      onClose();
+    }
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-end"
+      style={{ backgroundColor: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ y: "100%" }}
+        animate={{ y: 0 }}
+        exit={{ y: "100%" }}
+        transition={{ type: "spring", stiffness: 400, damping: 38 }}
+        className="w-full max-w-md mx-auto bg-[#1E293B] rounded-t-3xl border-t border-[#334155] overflow-hidden flex flex-col"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)", maxHeight: "85vh" }}
+      >
+        <div className="w-10 h-1 bg-[#334155] rounded-full mx-auto mt-4 mb-1 shrink-0" />
+
+        <div className="px-5 py-3 border-b border-[#334155]/60 flex items-center justify-between shrink-0">
+          <div>
+            <p className="text-xs text-[#64748B] font-medium">Time de Próxima 🔜</p>
+            <h3 className="text-[#F1F5F9] font-bold text-lg font-display">
+              Adicionar Jogador
+            </h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-[#64748B] hover:text-[#F1F5F9] min-h-[44px] min-w-[44px] flex items-center justify-center"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-4 shrink-0">
+          <input
+            type="text"
+            placeholder="Buscar ou digitar novo nome..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-[#0F172A] border border-[#334155] rounded-xl px-4 py-3 text-[#F1F5F9] placeholder-[#475569] focus:outline-none focus:border-[#1D4ED8] focus:ring-1 focus:ring-[#1D4ED8]"
+            autoFocus
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2">
+          {search.trim() && !isExactMatch && (
+            <button
+              disabled={adding}
+              onClick={handleCreateNew}
+              className="w-full flex items-center gap-3 bg-[#1D4ED8]/10 border border-[#1D4ED8]/30 hover:bg-[#1D4ED8]/20 rounded-2xl px-4 py-3 text-left transition-all disabled:opacity-50"
+            >
+              <div className="w-10 h-10 rounded-xl bg-[#1D4ED8] flex items-center justify-center text-white font-bold shrink-0">
+                +
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[#3B82F6] font-semibold text-sm">Criar e Adicionar</p>
+                <p className="text-[#F1F5F9] font-bold truncate">"{search.trim()}"</p>
+              </div>
+            </button>
+          )}
+
+          {loading ? (
+            <div className="text-center py-6 text-[#64748B] text-sm">Carregando...</div>
+          ) : filtered.length === 0 && !search.trim() ? (
+            <div className="text-center py-6 text-[#64748B] text-sm">
+              Todos os seus jogadores já estão na partida.
+            </div>
+          ) : (
+            filtered.map((p) => {
+              const initials = p.name
+                .split(" ")
+                .slice(0, 2)
+                .map((w) => w[0])
+                .join("")
+                .toUpperCase();
+              return (
+                <button
+                  key={p.id}
+                  disabled={adding}
+                  onClick={() => handleAddExisting(p)}
+                  className="w-full flex items-center gap-3 bg-[#0F172A] border border-[#334155] hover:border-[#475569] rounded-2xl px-4 py-3 min-h-[60px] text-left transition-all disabled:opacity-50"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-[#334155] flex items-center justify-center text-[#94A3B8] font-bold text-sm shrink-0">
+                    {initials}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[#F1F5F9] font-semibold truncate">{p.name}</p>
+                    <p className="text-[#64748B] text-xs">
+                      {p.type === "permanent" ? "Fixo" : "Avulso"}
+                    </p>
+                  </div>
+                  <ChevronRight size={18} className="text-[#475569]" />
+                </button>
+              );
+            })
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ─── Event Feed ───────────────────────────────────────────────────────────────
 
 function EventFeed({
@@ -1057,8 +1242,16 @@ export default function PlayMatchPage({
   const [nextMatchModal, setNextMatchModal] = useState<NextMatchModalState>({
     open: false,
   });
+  const [addQueueModal, setAddQueueModal] = useState<AddQueueModalState>({
+    open: false,
+  });
 
+  const { addPlayer } = usePlayers(); // For adding new players on the fly
   const minuteRef = useRef(0);
+
+  // We keep a ref to the matchChannel to send broadcast messages
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const matchChannelRef = useRef<any>(null);
 
   // Synced timer — all clients compute the same elapsed from server fields
   const elapsed = useSyncedTimer(match);
@@ -1178,7 +1371,22 @@ export default function PlayMatchPage({
           );
         }
       )
+      .on(
+        "broadcast",
+        { event: "next-match-created" },
+        (payload) => {
+          // Everyone listening receives this
+          if (payload.payload?.newMatchId) {
+            showToast("A próxima partida foi criada! Redirecionando...", "info");
+            setTimeout(() => {
+              router.push(`/match/${payload.payload.newMatchId}/lobby`);
+            }, 1500);
+          }
+        }
+      )
       .subscribe();
+      
+    matchChannelRef.current = matchChannel;
 
     // Subscribe to match_players changes (substitutions)
     const mpChannel = supabase
@@ -1360,6 +1568,34 @@ export default function PlayMatchPage({
     }
   }
 
+  async function handleNextMatchCreated(newMatchId: string) {
+    setNextMatchModal({ open: false });
+    
+    // Broadcast the event to all clients so they are redirected too
+    if (matchChannelRef.current) {
+      await matchChannelRef.current.send({
+        type: "broadcast",
+        event: "next-match-created",
+        payload: { newMatchId },
+      });
+    }
+
+    // Redirect creator
+    router.push(`/match/${newMatchId}/lobby`);
+  }
+
+  async function handleAddExistingToQueue(playerId: string) {
+    const res = await addPlayerToQueue(id, playerId);
+    // Realtime will update the list automatically
+    return res;
+  }
+
+  async function handleCreateNewAndQueue(name: string) {
+    const { data: player, error } = await addPlayer({ name, type: "casual" });
+    if (error || !player) return { error: error ?? "Erro ao criar jogador" };
+    return await addPlayerToQueue(id, player.id);
+  }
+
   const isWaiting = match?.status === "waiting";
   const isLive = match?.status === "in_progress";
   const isFinished = match?.status === "finished";
@@ -1494,38 +1730,54 @@ export default function PlayMatchPage({
                   </div>
 
                   {/* Time de Próxima queue */}
-                  {reserves.length > 0 && (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="bg-[#1E293B] border border-[#334155]/60 rounded-2xl px-4 py-3 space-y-2"
-                    >
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="bg-[#1E293B] border border-[#334155]/60 rounded-2xl px-4 py-3 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
                       <p className="text-[#64748B] text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5">
                         🔜 Time de Próxima
                         <span className="bg-[#334155] text-[#94A3B8] text-xs px-1.5 py-0.5 rounded-full font-mono ml-1">
                           {reserves.length}
                         </span>
                       </p>
-                      <div className="flex gap-1.5 flex-wrap">
-                        {reserves.map((r, i) => (
-                          <span
-                            key={r.player_id}
-                            className={`text-xs px-2.5 py-1 rounded-xl font-medium flex items-center gap-1 ${
-                              i < teamSize
-                                ? "bg-[#22C55E]/15 text-[#86EFAC] border border-[#22C55E]/30"
-                                : "bg-[#334155] text-[#94A3B8]"
-                            }`}
-                          >
-                            <span className="text-[#475569] text-xs">{i + 1}.</span>
-                            {r.player_name.split(" ")[0]}
-                          </span>
-                        ))}
-                      </div>
-                      <p className="text-[#475569] text-xs">
-                        Os primeiros {teamSize} entram na próxima partida ↑
-                      </p>
-                    </motion.div>
-                  )}
+                      {/* Creator only button to add player mid-match */}
+                      {isCreator && (
+                        <button
+                          onClick={() => setAddQueueModal({ open: true })}
+                          className="text-[#3B82F6] text-xs font-semibold bg-[#1D4ED8]/10 hover:bg-[#1D4ED8]/20 border border-[#1D4ED8]/30 px-2 py-1 rounded-lg transition-colors"
+                        >
+                          + Adicionar
+                        </button>
+                      )}
+                    </div>
+                    
+                    {reserves.length > 0 ? (
+                      <>
+                        <div className="flex gap-1.5 flex-wrap">
+                          {reserves.map((r, i) => (
+                            <span
+                              key={r.player_id}
+                              className={`text-xs px-2.5 py-1 rounded-xl font-medium flex items-center gap-1 ${
+                                i < teamSize
+                                  ? "bg-[#22C55E]/15 text-[#86EFAC] border border-[#22C55E]/30"
+                                  : "bg-[#334155] text-[#94A3B8]"
+                              }`}
+                            >
+                              <span className="text-[#475569] text-xs">{i + 1}.</span>
+                              {r.player_name.split(" ")[0]}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="text-[#475569] text-xs">
+                          Os primeiros {teamSize} entram na próxima partida ↑
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-[#64748B] text-xs italic">Nenhum jogador na fila.</p>
+                    )}
+                  </motion.div>
                 </div>
               )}
 

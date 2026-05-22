@@ -18,7 +18,7 @@ interface UsePlayersReturn {
   casualPlayers: Player[];
   loading: boolean;
   error: string | null;
-  addPlayer: (input: CreatePlayerInput) => Promise<{ error: string | null }>;
+  addPlayer: (input: CreatePlayerInput) => Promise<{ error: string | null; data?: Player }>;
   editPlayer: (id: string, input: UpdatePlayerInput) => Promise<{ error: string | null }>;
   removePlayer: (id: string) => Promise<{ error: string | null }>;
   refresh: () => Promise<void>;
@@ -50,7 +50,7 @@ export function usePlayers(): UsePlayersReturn {
   }, [refresh]);
 
   const addPlayer = useCallback(
-    async (input: CreatePlayerInput): Promise<{ error: string | null }> => {
+    async (input: CreatePlayerInput): Promise<{ error: string | null; data?: Player }> => {
       const { data, error: createError } = await createPlayer(input);
       if (createError) return { error: createError };
 
@@ -63,7 +63,7 @@ export function usePlayers(): UsePlayersReturn {
           })
         );
       }
-      return { error: null };
+      return { error: null, data: data as Player };
     },
     []
   );
