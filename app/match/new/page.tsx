@@ -7,7 +7,6 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronUp,
-  Shuffle,
   Users,
   UserCheck,
   Zap,
@@ -180,14 +179,6 @@ export default function NewMatchPage() {
     setSelectedIds(new Set());
   }
 
-  function shuffleSelection() {
-    // Keep same count but re-select randomly (useful for casual picks)
-    const count = selectedIds.size;
-    const shuffled = [...players].sort(() => Math.random() - 0.5).slice(0, count);
-    setSelectedIds(new Set(shuffled.map((p) => p.id)));
-    showToast("Seleção embaralhada!", "info");
-  }
-
   const selectedCount = selectedIds.size;
   const minRequired = teamSize * 2;
   const canCreate = selectedCount >= minRequired && !creating;
@@ -197,11 +188,19 @@ export default function NewMatchPage() {
     e.preventDefault();
     if (!canCreate) return;
 
+    // Sort selected players by created_at (order of arrival)
+    // First (teamSize*2) will be randomly drawn; rest go to queue in order
+    const sortedPlayerIds = players
+      .filter((p) => selectedIds.has(p.id))
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      .map((p) => p.id);
+
     setCreating(true);
     const { data, error } = await createMatch({
       name: matchName.trim() || "Futebom",
-      playerIds: Array.from(selectedIds),
+      playerIds: sortedPlayerIds,
       teamSize,
+      isFirstMatch: true, // sorteio entre os primeiros (teamSize*2)
     });
     setCreating(false);
 
@@ -302,14 +301,6 @@ export default function NewMatchPage() {
             </label>
             {!loading && players.length > 0 && (
               <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={shuffleSelection}
-                  className="text-[#64748B] hover:text-[#3B82F6] transition-colors min-h-[36px] min-w-[36px] flex items-center justify-center"
-                  title="Embaralhar seleção"
-                >
-                  <Shuffle size={16} />
-                </button>
                 <button
                   type="button"
                   onClick={selectedCount === players.length ? clearAll : selectAll}
@@ -457,8 +448,13 @@ export default function NewMatchPage() {
             disabled={!canCreate}
           >
             <Swords size={18} />
-            {creating ? "Sorteando times..." : "Criar Partida e Sortear Times"}
+            {creating ? "Sorteando times..." : `Criar Partida · Sortear ${teamSize * 2} primeiros`}
           </Button>
+          {!creating && canCreate && (
+            <p className="text-center text-[#475569] text-xs mt-2">
+              🎲 Os {teamSize * 2} primeiros a chegar serão sorteados. Os demais entram na fila.
+            </p>
+          )}
           {!canCreate && selectedCount === 0 && !loading && players.length > 0 && (
             <p className="text-center text-[#64748B] text-xs mt-2">
               Selecione pelo menos {minRequired} jogadores para um {teamSize}x{teamSize}

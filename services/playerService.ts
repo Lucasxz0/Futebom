@@ -153,3 +153,45 @@ export async function deletePlayer(
   if (error) return { error: error.message };
   return { error: null };
 }
+
+/**
+ * Create multiple players at once from a list of names.
+ * Silently skips names that already exist (case-insensitive duplicate check).
+ * Returns how many were created vs skipped.
+ */
+export async function createPlayersBulk(
+  names: string[],
+  type: PlayerType
+): Promise<{ created: number; skipped: number; error: string | null }> {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { created: 0, skipped: 0, error: "Usuário não autenticado." };
+
+  const trimmed = names.map((n) => n.trim()).filter((n) => n.length >= 2);
+  if (trimmed.length === 0) return { created: 0, skipped: 0, error: null };
+
+  // Fetch existing player names for this user (to check duplicates)
+  const { data: existing } = await supabase
+    .from("players")
+    .select("name")
+    .eq("user_id", user.id);
+
+  const existingLower = new Set(
+    (existing ?? []).map((p) => p.name.toLowerCase())
+  );
+
+  const toCreate = trimmed.filter((n) => !existingLower.has(n.toLowerCase()));
+  const skipped = trimmed.length - toCreate.length;
+
+  if (toCreate.length === 0) return { created: 0, skipped, error: null };
+
+  const rows = toCreate.map((name) => ({ name, type, user_id: user.id }));
+  const { error } = await supabase.from("players").insert(rows);
+
+  if (error) return { created: 0, skipped, error: error.message };
+
+  return { created: toCreate.length, skipped, error: null };
+}

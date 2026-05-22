@@ -13,9 +13,11 @@ import {
   ChevronRight,
   ShieldCheck,
   Zap,
+  ClipboardList,
+  Check,
 } from "lucide-react";
 import { usePlayers } from "@/hooks/usePlayers";
-import { Player, PlayerType } from "@/services/playerService";
+import { Player, PlayerType, createPlayersBulk } from "@/services/playerService";
 import { useToast } from "@/components/ui/Toast";
 import Button from "@/components/ui/Button";
 import SkeletonCard from "@/components/ui/SkeletonCard";
@@ -26,6 +28,267 @@ interface ModalState {
   open: boolean;
   mode: "add" | "edit";
   player?: Player;
+}
+
+// ─── Parse player names from a convocação list ────────────────────────────────
+
+const SKIP_KEYWORDS = [
+  "lista", "goleiro", "espera", "aviso", "data:", "horário",
+  "local:", "jogo", "lembr", "convocad", "copie", "adicione",
+  "começa", "cheguem", "📅", "⏰", "📍", "📝", "⏳", "⚠️",
+  "🔥", "⚽", "real society", "quinta", "sexta", "sábado",
+  "domingo", "segunda", "terça", "quarta", "horario",
+];
+
+function parsePlayers(text: string): string[] {
+  const names: string[] = [];
+
+  for (const rawLine of text.split("\n")) {
+    let line = rawLine.trim();
+
+    if (!line) continue;
+
+    // Skip lines with goalkeeper emoji (goleiros)
+    if (line.includes("🧤")) continue;
+
+    // Skip lines containing header/meta keywords
+    const lowerLine = line.toLowerCase();
+    if (SKIP_KEYWORDS.some((kw) => lowerLine.includes(kw.toLowerCase()))) continue;
+
+    // Remove leading emojis and special chars
+    line = line.replace(
+      /^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1FFFF}]+\s*/gu,
+      ""
+    );
+
+    // Remove number + dash/dot prefix (e.g., "1 -", "10.", "2)")
+    line = line.replace(/^\d+\s*[-.)]\s*/, "");
+
+    // Trim again
+    line = line.trim();
+
+    // Skip if it's just whitespace, numbers, or dashes
+    if (!line || /^[\d\s\-:.\/()]+$/.test(line)) continue;
+
+    // Skip if fewer than 2 letters remain (likely empty slot like "14 -")
+    const letters = line.match(/[a-zA-ZÀ-ÿ]/g);
+    if (!letters || letters.length < 2) continue;
+
+    names.push(line);
+  }
+
+  return names;
+}
+
+// ─── Bulk Import Modal ────────────────────────────────────────────────────────
+
+function BulkImportModal({
+  onClose,
+  onImported,
+}: {
+  onClose: () => void;
+  onImported: (created: number, skipped: number) => void;
+}) {
+  const [text, setText] = useState("");
+  const [preview, setPreview] = useState<string[] | null>(null);
+  const [removedIndexes, setRemovedIndexes] = useState<Set<number>>(new Set());
+  const [importing, setImporting] = useState(false);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    setTimeout(() => textareaRef.current?.focus(), 100);
+  }, []);
+
+  function handleExtract() {
+    const names = parsePlayers(text);
+    if (names.length === 0) {
+      setFieldError("Nenhum nome encontrado. Verifique o texto colado.");
+      return;
+    }
+    setPreview(names);
+    setRemovedIndexes(new Set());
+    setFieldError(null);
+  }
+
+  function toggleRemove(i: number) {
+    setRemovedIndexes((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }
+
+  async function handleImport() {
+    if (!preview) return;
+    const toImport = preview.filter((_, i) => !removedIndexes.has(i));
+    if (toImport.length === 0) {
+      setFieldError("Nenhum jogador selecionado para importar.");
+      return;
+    }
+    setImporting(true);
+    const { created, skipped, error } = await createPlayersBulk(toImport, "casual");
+    setImporting(false);
+    if (error) {
+      setFieldError(error);
+    } else {
+      onImported(created, skipped);
+    }
+  }
+
+  const activeCount = preview
+    ? preview.filter((_, i) => !removedIndexes.has(i)).length
+    : 0;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-end justify-center"
+      style={{ backgroundColor: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ y: "100%" }}
+        animate={{ y: 0 }}
+        exit={{ y: "100%" }}
+        transition={{ type: "spring", stiffness: 400, damping: 40 }}
+        className="w-full max-w-md bg-[#1E293B] rounded-t-3xl border-t border-[#334155] overflow-hidden"
+        style={{ paddingBottom: "calc(1.5rem + env(safe-area-inset-bottom))" }}
+      >
+        {/* Handle */}
+        <div className="w-10 h-1 bg-[#334155] rounded-full mx-auto mt-4 mb-1" />
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#334155]/60">
+          <div>
+            <h2 className="text-[#F1F5F9] text-xl font-bold font-display flex items-center gap-2">
+              <ClipboardList size={20} className="text-[#3B82F6]" />
+              Importar Lista
+            </h2>
+            <p className="text-[#64748B] text-xs mt-0.5">
+              Cole a lista de convocação abaixo
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-[#64748B] hover:text-[#F1F5F9] min-h-[44px] min-w-[44px] flex items-center justify-center"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4 max-h-[75vh] overflow-y-auto">
+          {/* Step 1 — Paste text */}
+          {!preview && (
+            <div className="space-y-3">
+              <p className="text-[#94A3B8] text-sm font-medium">
+                Cole o texto da lista (goleiros e cabeçalhos são ignorados automaticamente):
+              </p>
+              <textarea
+                ref={textareaRef}
+                value={text}
+                onChange={(e) => {
+                  setText(e.target.value);
+                  setFieldError(null);
+                }}
+                placeholder={"LISTA DE CONVOCAÇÃO ⚽\n\nGoleiros:\n🧤Fulano\n\nLista de Jogadores:\n1 - João\n2 - Pedro\n..."}
+                rows={9}
+                className="w-full bg-[#0F172A] border border-[#334155] rounded-2xl px-4 py-3 text-[#F1F5F9] placeholder-[#334155] focus:outline-none focus:border-[#1D4ED8] focus:ring-1 focus:ring-[#1D4ED8] text-sm resize-none font-mono leading-relaxed"
+              />
+              {fieldError && (
+                <motion.p
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-[#EF4444] text-sm"
+                >
+                  {fieldError}
+                </motion.p>
+              )}
+              <Button
+                variant="primary"
+                className="w-full"
+                disabled={!text.trim()}
+                onClick={handleExtract}
+              >
+                Extrair nomes da lista
+              </Button>
+            </div>
+          )}
+
+          {/* Step 2 — Preview & confirm */}
+          {preview && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-[#94A3B8] text-sm font-medium">
+                  {preview.length} nome{preview.length !== 1 ? "s" : ""} encontrado{preview.length !== 1 ? "s" : ""}
+                </p>
+                <button
+                  onClick={() => setPreview(null)}
+                  className="text-[#3B82F6] text-xs font-semibold min-h-[36px] px-2 hover:text-[#60A5FA]"
+                >
+                  ← Voltar
+                </button>
+              </div>
+
+              <p className="text-[#64748B] text-xs">
+                Toque em um nome para removê-lo antes de importar:
+              </p>
+
+              <div className="flex flex-wrap gap-2">
+                {preview.map((name, i) => {
+                  const removed = removedIndexes.has(i);
+                  return (
+                    <motion.button
+                      key={i}
+                      layout
+                      whileTap={{ scale: 0.93 }}
+                      onClick={() => toggleRemove(i)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-semibold border transition-all ${
+                        removed
+                          ? "bg-[#334155]/40 border-[#334155] text-[#475569] line-through"
+                          : "bg-[#1D4ED8]/15 border-[#1D4ED8]/40 text-[#93C5FD]"
+                      }`}
+                    >
+                      {!removed && <Check size={12} className="text-[#22C55E] shrink-0" />}
+                      {name}
+                    </motion.button>
+                  );
+                })}
+              </div>
+
+              {fieldError && (
+                <motion.p
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-[#EF4444] text-sm"
+                >
+                  {fieldError}
+                </motion.p>
+              )}
+
+              <div className="pt-2 space-y-2">
+                <p className="text-[#64748B] text-xs text-center">
+                  {activeCount} jogador{activeCount !== 1 ? "es" : ""} serão criados como <span className="text-[#94A3B8] font-semibold">Avulso</span>. Você pode alterar o tipo depois.
+                </p>
+                <Button
+                  variant="primary"
+                  className="w-full"
+                  disabled={activeCount === 0}
+                  loading={importing}
+                  onClick={handleImport}
+                >
+                  Criar {activeCount} jogador{activeCount !== 1 ? "es" : ""}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
 }
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
@@ -100,10 +363,11 @@ function PlayerCard({
       >
         {/* Avatar */}
         <div
-          className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 font-bold font-display text-sm ${isPermanent
-            ? "bg-[#1D4ED8]/30 text-[#3B82F6]"
-            : "bg-[#334155] text-[#94A3B8]"
-            }`}
+          className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 font-bold font-display text-sm ${
+            isPermanent
+              ? "bg-[#1D4ED8]/30 text-[#3B82F6]"
+              : "bg-[#334155] text-[#94A3B8]"
+          }`}
         >
           {initials}
         </div>
@@ -112,8 +376,9 @@ function PlayerCard({
         <div className="flex-1 min-w-0">
           <p className="text-[#F1F5F9] font-semibold truncate">{player.name}</p>
           <span
-            className={`inline-flex items-center gap-1 text-xs mt-0.5 ${isPermanent ? "text-[#3B82F6]" : "text-[#64748B]"
-              }`}
+            className={`inline-flex items-center gap-1 text-xs mt-0.5 ${
+              isPermanent ? "text-[#3B82F6]" : "text-[#64748B]"
+            }`}
           >
             {isPermanent ? (
               <>
@@ -199,7 +464,6 @@ function PlayerModal({
   const [fieldError, setFieldError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auto focus input when modal opens
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 100);
     return () => clearTimeout(t);
@@ -300,10 +564,11 @@ function PlayerModal({
               <button
                 type="button"
                 onClick={() => setType("permanent")}
-                className={`flex items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-semibold border transition-all min-h-[52px] ${type === "permanent"
-                  ? "bg-[#1D4ED8] border-[#1D4ED8] text-white shadow-lg"
-                  : "bg-[#0F172A] border-[#334155] text-[#64748B] hover:border-[#475569]"
-                  }`}
+                className={`flex items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-semibold border transition-all min-h-[52px] ${
+                  type === "permanent"
+                    ? "bg-[#1D4ED8] border-[#1D4ED8] text-white shadow-lg"
+                    : "bg-[#0F172A] border-[#334155] text-[#64748B] hover:border-[#475569]"
+                }`}
               >
                 <ShieldCheck size={16} />
                 Fixo
@@ -311,10 +576,11 @@ function PlayerModal({
               <button
                 type="button"
                 onClick={() => setType("casual")}
-                className={`flex items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-semibold border transition-all min-h-[52px] ${type === "casual"
-                  ? "bg-[#475569] border-[#475569] text-white shadow-lg"
-                  : "bg-[#0F172A] border-[#334155] text-[#64748B] hover:border-[#475569]"
-                  }`}
+                className={`flex items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-semibold border transition-all min-h-[52px] ${
+                  type === "casual"
+                    ? "bg-[#475569] border-[#475569] text-white shadow-lg"
+                    : "bg-[#0F172A] border-[#334155] text-[#64748B] hover:border-[#475569]"
+                }`}
               >
                 <Zap size={16} />
                 Avulso
@@ -432,6 +698,7 @@ export default function PlayersPage() {
   const [modal, setModal] = useState<ModalState>({ open: false, mode: "add" });
   const [deleteTarget, setDeleteTarget] = useState<Player | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [showBulkImport, setShowBulkImport] = useState(false);
 
   function openAdd(defaultType?: PlayerType) {
     setModal({ open: true, mode: "add", player: defaultType ? { type: defaultType } as Player : undefined });
@@ -473,6 +740,16 @@ export default function PlayersPage() {
     setDeleteTarget(null);
   }
 
+  function handleImported(created: number, skipped: number) {
+    setShowBulkImport(false);
+    refresh();
+    const msg =
+      skipped > 0
+        ? `${created} jogador${created !== 1 ? "es" : ""} criado${created !== 1 ? "s" : ""}! (${skipped} já existia${skipped !== 1 ? "m" : ""}) ✅`
+        : `${created} jogador${created !== 1 ? "es" : ""} criado${created !== 1 ? "s" : ""}! ✅`;
+    showToast(msg, "success");
+  }
+
   const totalPlayers = permanentPlayers.length + casualPlayers.length;
 
   return (
@@ -484,7 +761,7 @@ export default function PlayersPage() {
           animate={{ opacity: 1, y: 0 }}
           className="pt-4 pb-5"
         >
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Users size={24} className="text-[#3B82F6]" />
               <h1 className="text-[#F1F5F9] text-2xl font-bold font-display">
@@ -497,16 +774,31 @@ export default function PlayersPage() {
               )}
             </div>
 
-            {/* FAB-style add button */}
-            <motion.button
-              whileTap={{ scale: 0.92 }}
-              onClick={() => openAdd()}
-              id="add-player-btn"
-              className="flex items-center gap-2 bg-[#1D4ED8] hover:bg-[#1E40AF] text-white px-4 py-2.5 rounded-xl font-semibold text-sm transition-colors min-h-[44px] shadow-lg"
-            >
-              <Plus size={18} />
-              Adicionar
-            </motion.button>
+            {/* Action buttons */}
+            <div className="flex gap-2">
+              {/* Bulk import */}
+              <motion.button
+                whileTap={{ scale: 0.92 }}
+                onClick={() => setShowBulkImport(true)}
+                id="bulk-import-btn"
+                className="flex items-center gap-1.5 bg-[#1E293B] hover:bg-[#334155] border border-[#334155] text-[#94A3B8] px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors min-h-[44px]"
+                title="Importar lista"
+              >
+                <ClipboardList size={17} />
+                <span className="hidden sm:inline">Lista</span>
+              </motion.button>
+
+              {/* Add single player */}
+              <motion.button
+                whileTap={{ scale: 0.92 }}
+                onClick={() => openAdd()}
+                id="add-player-btn"
+                className="flex items-center gap-2 bg-[#1D4ED8] hover:bg-[#1E40AF] text-white px-4 py-2.5 rounded-xl font-semibold text-sm transition-colors min-h-[44px] shadow-lg"
+              >
+                <Plus size={18} />
+                Adicionar
+              </motion.button>
+            </div>
           </div>
           <p className="text-[#64748B] text-sm mt-1">
             Seus jogadores fixos e convidados
@@ -606,12 +898,21 @@ export default function PlayersPage() {
                   Nenhum jogador ainda
                 </h3>
                 <p className="text-[#64748B] text-sm mb-6 max-w-xs mx-auto">
-                  Adicione os jogadores para usar nas partidas.
+                  Adicione os jogadores para usar nas partidas, ou importe uma lista de convocação.
                 </p>
-                <Button variant="primary" onClick={() => openAdd()} className="mx-auto">
-                  <Plus size={18} className="mr-1" />
-                  Adicionar primeiro jogador
-                </Button>
+                <div className="flex gap-3 justify-center flex-wrap">
+                  <Button variant="primary" onClick={() => openAdd()} className="mx-auto">
+                    <Plus size={18} className="mr-1" />
+                    Adicionar jogador
+                  </Button>
+                  <button
+                    onClick={() => setShowBulkImport(true)}
+                    className="flex items-center gap-2 bg-[#1E293B] border border-[#334155] text-[#94A3B8] px-4 py-2.5 rounded-xl text-sm font-semibold min-h-[44px] hover:border-[#475569] transition-colors"
+                  >
+                    <ClipboardList size={16} />
+                    Importar lista
+                  </button>
+                </div>
               </motion.div>
             )}
           </div>
@@ -622,6 +923,16 @@ export default function PlayersPage() {
       <AnimatePresence>
         {modal.open && (
           <PlayerModal modal={modal} onClose={closeModal} onSave={handleSave} />
+        )}
+      </AnimatePresence>
+
+      {/* Bulk Import Modal */}
+      <AnimatePresence>
+        {showBulkImport && (
+          <BulkImportModal
+            onClose={() => setShowBulkImport(false)}
+            onImported={handleImported}
+          />
         )}
       </AnimatePresence>
 

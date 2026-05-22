@@ -14,6 +14,10 @@ export interface Match {
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+  // Timer sync fields (added via migration)
+  timer_started_at: string | null;
+  timer_offset_seconds: number;
+  timer_paused: boolean;
 }
 
 export interface Team {
@@ -30,6 +34,7 @@ export interface MatchPlayer {
   team_id: string | null;
   player_id: string;
   position: number | null;
+  queue_position: number | null;
 }
 
 export interface MatchWithTeams extends Match {
@@ -38,35 +43,78 @@ export interface MatchWithTeams extends Match {
 
 export interface CreateMatchInput {
   name: string;
-  playerIds: string[]; // IDs dos jogadores selecionados
-  teamSize: number;    // jogadores por time
+  /** IDs dos jogadores já ordenados por ordem de chegada (created_at asc) */
+  playerIds: string[];
+  teamSize: number;
+  /**
+   * true  → primeira partida: embaralha os primeiros (teamSize*2) jogadores nos times,
+   *         o resto vai para a fila em ordem.
+   * false → partidas seguintes: distribui em ordem direta, sem embaralhar.
+   */
+  isFirstMatch?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Distribui jogadores em 2 times de forma aleatória e balanceada.
- * Se teamSize < total de jogadores, os excedentes ficam como reservas (team_id = null).
+ * Distribui jogadores em 2 times e fila.
+ *
+ * isFirstMatch=true  → os primeiros (teamSize*2) são sorteados (embaralhados) entre
+ *                       os dois times; os demais vão para a fila em ordem de chegada.
+ * isFirstMatch=false → distribui em ordem direta sem embaralhar.
  */
 function splitIntoTeams(
   playerIds: string[],
   teamAId: string,
   teamBId: string,
-  teamSize: number
-): { player_id: string; team_id: string | null; position: number }[] {
-  const shuffled = [...playerIds].sort(() => Math.random() - 0.5);
-  const result: { player_id: string; team_id: string | null; position: number }[] = [];
+  teamSize: number,
+  isFirstMatch: boolean
+): {
+  player_id: string;
+  team_id: string | null;
+  position: number | null;
+  queue_position: number | null;
+}[] {
+  const result: {
+    player_id: string;
+    team_id: string | null;
+    position: number | null;
+    queue_position: number | null;
+  }[] = [];
 
-  shuffled.forEach((pid, i) => {
-    if (i < teamSize) {
-      result.push({ player_id: pid, team_id: teamAId, position: i + 1 });
-    } else if (i < teamSize * 2) {
-      result.push({ player_id: pid, team_id: teamBId, position: i - teamSize + 1 });
-    } else {
-      // Reserva
-      result.push({ player_id: pid, team_id: null, position: i + 1 });
-    }
-  });
+  const playersPerMatch = teamSize * 2;
+
+  if (isFirstMatch) {
+    // Sorteio: pega os primeiros (teamSize*2), embaralha, distribui
+    const firstGroup = playerIds.slice(0, playersPerMatch);
+    const rest = playerIds.slice(playersPerMatch);
+
+    const shuffled = [...firstGroup].sort(() => Math.random() - 0.5);
+
+    shuffled.forEach((pid, i) => {
+      if (i < teamSize) {
+        result.push({ player_id: pid, team_id: teamAId, position: i + 1, queue_position: null });
+      } else {
+        result.push({ player_id: pid, team_id: teamBId, position: i - teamSize + 1, queue_position: null });
+      }
+    });
+
+    // Restantes vão para a fila em ordem de chegada
+    rest.forEach((pid, i) => {
+      result.push({ player_id: pid, team_id: null, position: null, queue_position: i + 1 });
+    });
+  } else {
+    // Ordem direta: sem embaralhamento
+    playerIds.forEach((pid, i) => {
+      if (i < teamSize) {
+        result.push({ player_id: pid, team_id: teamAId, position: i + 1, queue_position: null });
+      } else if (i < playersPerMatch) {
+        result.push({ player_id: pid, team_id: teamBId, position: i - teamSize + 1, queue_position: null });
+      } else {
+        result.push({ player_id: pid, team_id: null, position: null, queue_position: i - playersPerMatch + 1 });
+      }
+    });
+  }
 
   return result;
 }
@@ -122,7 +170,6 @@ export async function createMatch(
     .select();
 
   if (teamsError || !teams || teams.length < 2) {
-    // Rollback match
     await supabase.from("matches").delete().eq("id", match.id);
     return { data: null, error: teamsError?.message ?? "Erro ao criar times." };
   }
@@ -134,7 +181,8 @@ export async function createMatch(
     input.playerIds,
     teamA.id,
     teamB.id,
-    input.teamSize
+    input.teamSize,
+    input.isFirstMatch ?? true
   );
 
   const matchPlayersRows = assignments.map((a) => ({
@@ -142,6 +190,7 @@ export async function createMatch(
     team_id: a.team_id,
     player_id: a.player_id,
     position: a.position,
+    queue_position: a.queue_position,
   }));
 
   const { error: mpError } = await supabase
@@ -149,7 +198,6 @@ export async function createMatch(
     .insert(matchPlayersRows);
 
   if (mpError) {
-    // Rollback
     await supabase.from("matches").delete().eq("id", match.id);
     return { data: null, error: mpError.message };
   }
@@ -202,7 +250,7 @@ export async function getMatchById(
       })),
   }));
 
-  // Reservas (sem time)
+  // Reservas / fila (sem time)
   const reserves = (matchPlayers ?? [])
     .filter((mp) => mp.team_id === null)
     .map((mp) => ({
@@ -215,7 +263,6 @@ export async function getMatchById(
     data: {
       ...(match as Match),
       teams: teamsWithPlayers,
-      // Attach reserves as a virtual "Reservas" team if any
       ...(reserves.length > 0
         ? {
             teams: [
@@ -223,7 +270,7 @@ export async function getMatchById(
               {
                 id: "reserves",
                 match_id: id,
-                name: "Reservas",
+                name: "Próxima",
                 color: "#64748B",
                 score: 0,
                 players: reserves,
@@ -280,16 +327,64 @@ export interface LiveMatchData {
 }
 
 /**
- * Start a match: set status to 'in_progress' and record started_at.
+ * Start a match: set status to 'in_progress', record started_at, and initialize synced timer.
  */
 export async function startMatch(
   matchId: string
 ): Promise<{ error: string | null }> {
   const supabase = createClient();
+  const now = new Date().toISOString();
 
   const { error } = await supabase
     .from("matches")
-    .update({ status: "in_progress", started_at: new Date().toISOString() })
+    .update({
+      status: "in_progress",
+      started_at: now,
+      timer_started_at: now,
+      timer_offset_seconds: 0,
+      timer_paused: false,
+    })
+    .eq("id", matchId);
+
+  return { error: error?.message ?? null };
+}
+
+/**
+ * Pause the match timer.
+ * Saves current elapsed into timer_offset_seconds and marks as paused.
+ */
+export async function pauseTimer(
+  matchId: string,
+  currentElapsed: number
+): Promise<{ error: string | null }> {
+  const supabase = createClient();
+
+  const { error } = await supabase
+    .from("matches")
+    .update({
+      timer_paused: true,
+      timer_offset_seconds: currentElapsed,
+    })
+    .eq("id", matchId);
+
+  return { error: error?.message ?? null };
+}
+
+/**
+ * Resume the match timer from where it was paused.
+ */
+export async function resumeTimer(
+  matchId: string
+): Promise<{ error: string | null }> {
+  const supabase = createClient();
+  const now = new Date().toISOString();
+
+  const { error } = await supabase
+    .from("matches")
+    .update({
+      timer_paused: false,
+      timer_started_at: now,
+    })
     .eq("id", matchId);
 
   return { error: error?.message ?? null };
@@ -441,28 +536,30 @@ export async function getMatchEvents(
   return { data: events, error: null };
 }
 
-// ─── Phase 5: Substitutions ───────────────────────────────────────────────────
+// ─── Substitutions & Queue ────────────────────────────────────────────────────
 
 export interface LivePlayer {
   match_player_id: string;
   player_id: string;
   player_name: string;
-  team_id: string | null; // null = reserve/bench
+  team_id: string | null;
+  queue_position: number | null;
 }
 
 /**
- * Get all match_players for a match with player names, split into active (on a team) and reserves.
+ * Get all match_players for a match with player names.
+ * Active players (on a team) and reserves (queue) sorted by queue_position.
  */
 export async function getLiveMatchPlayers(matchId: string): Promise<{
   active: LivePlayer[];
-  reserves: LivePlayer[];
+  reserves: LivePlayer[]; // sorted by queue_position ascending
   error: string | null;
 }> {
   const supabase = createClient();
 
   const { data, error } = await supabase
     .from("match_players")
-    .select("id, player_id, team_id, players(name)")
+    .select("id, player_id, team_id, queue_position, players(name)")
     .eq("match_id", matchId);
 
   if (error) return { active: [], reserves: [], error: error.message };
@@ -473,43 +570,61 @@ export async function getLiveMatchPlayers(matchId: string): Promise<{
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     player_name: (row as any).players?.name ?? "Jogador",
     team_id: row.team_id,
+    queue_position: row.queue_position ?? null,
   }));
+
+  const reserves = all
+    .filter((p) => p.team_id === null)
+    .sort((a, b) => (a.queue_position ?? 9999) - (b.queue_position ?? 9999));
 
   return {
     active: all.filter((p) => p.team_id !== null),
-    reserves: all.filter((p) => p.team_id === null),
+    reserves,
     error: null,
   };
 }
 
 /**
  * Perform a substitution:
- * - The outgoing player's team_id is set to null (goes to bench)
- * - The incoming player's team_id is set to the team's id (enters the match)
+ * - The outgoing player's team_id is set to null and goes to END of queue
+ * - The incoming player's team_id is set to the team's id (queue_position cleared)
  * - A substitution event is recorded in match_events
  */
 export async function performSubstitution(params: {
   matchId: string;
   teamId: string;
-  outPlayerId: string;    // player going to bench
-  inPlayerId: string;     // player entering the field
+  outPlayerId: string;  // player going to bench (end of queue)
+  inPlayerId: string;   // player entering the field
   minute: number;
 }): Promise<{ error: string | null }> {
   const supabase = createClient();
 
-  // 1. Move outgoing player to bench (team_id = null)
+  // Get current max queue_position to place outgoing player at end
+  const { data: queueData } = await supabase
+    .from("match_players")
+    .select("queue_position")
+    .eq("match_id", params.matchId)
+    .is("team_id", null)
+    .order("queue_position", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const maxQueuePos = (queueData as any)?.queue_position ?? 0;
+
+  // 1. Move outgoing player to end of queue
   const { error: outError } = await supabase
     .from("match_players")
-    .update({ team_id: null })
+    .update({ team_id: null, queue_position: maxQueuePos + 1 })
     .eq("match_id", params.matchId)
     .eq("player_id", params.outPlayerId);
 
   if (outError) return { error: outError.message };
 
-  // 2. Move incoming player to team
+  // 2. Move incoming player to team, clear queue position
   const { error: inError } = await supabase
     .from("match_players")
-    .update({ team_id: params.teamId })
+    .update({ team_id: params.teamId, queue_position: null })
     .eq("match_id", params.matchId)
     .eq("player_id", params.inPlayerId);
 
@@ -527,4 +642,147 @@ export async function performSubstitution(params: {
     });
 
   return { error: eventError?.message ?? null };
+}
+
+/**
+ * Create the next match when the current one ends.
+ *
+ * - Winning team stays as-is
+ * - First teamSize players from the queue enter as the new team
+ * - Losing team players go to END of new queue (after remaining queue players)
+ * - No shuffle — purely by queue_position order
+ */
+export async function createNextMatch(params: {
+  currentMatchId: string;
+  losingTeamId: string;
+  teamSize: number;
+  matchName: string;
+}): Promise<{ data: Match | null; error: string | null }> {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { data: null, error: "Usuário não autenticado." };
+
+  // Fetch all current match players
+  const { data: currentPlayers, error: cpError } = await supabase
+    .from("match_players")
+    .select("player_id, team_id, queue_position")
+    .eq("match_id", params.currentMatchId);
+
+  if (cpError || !currentPlayers) {
+    return { data: null, error: cpError?.message ?? "Erro ao buscar jogadores." };
+  }
+
+  // Fetch current teams
+  const { data: currentTeams, error: ctError } = await supabase
+    .from("teams")
+    .select("id, name, color, score")
+    .eq("match_id", params.currentMatchId);
+
+  if (ctError || !currentTeams) {
+    return { data: null, error: ctError?.message ?? "Erro ao buscar times." };
+  }
+
+  const winningTeam = currentTeams.find((t) => t.id !== params.losingTeamId);
+  if (!winningTeam) return { data: null, error: "Time vencedor não encontrado." };
+  const losingTeam = currentTeams.find((t) => t.id === params.losingTeamId);
+
+  // Separate player groups
+  const winnerPlayerIds = currentPlayers
+    .filter((p) => p.team_id === winningTeam.id)
+    .map((p) => p.player_id);
+
+  const loserPlayerIds = currentPlayers
+    .filter((p) => p.team_id === params.losingTeamId)
+    .map((p) => p.player_id);
+
+  // Queue sorted by position
+  const queuePlayerIds = currentPlayers
+    .filter((p) => p.team_id === null)
+    .sort((a, b) => ((a.queue_position ?? 9999) - (b.queue_position ?? 9999)))
+    .map((p) => p.player_id);
+
+  // Next team = first teamSize from queue
+  const nextTeamPlayerIds = queuePlayerIds.slice(0, params.teamSize);
+  const remainingQueueIds = queuePlayerIds.slice(params.teamSize);
+
+  if (nextTeamPlayerIds.length < params.teamSize) {
+    return { data: null, error: "Não há jogadores suficientes na fila para a próxima partida." };
+  }
+
+  // New queue: remaining queue first, then losers at end
+  const newQueueIds = [...remainingQueueIds, ...loserPlayerIds];
+
+  // Generate access code
+  let accessCode = generateAccessCode(6);
+  const { data: existingCode } = await supabase
+    .from("matches")
+    .select("id")
+    .eq("access_code", accessCode)
+    .maybeSingle();
+  if (existingCode) accessCode = generateAccessCode(6);
+
+  // Create new match
+  const { data: newMatch, error: matchError } = await supabase
+    .from("matches")
+    .insert({
+      creator_id: user.id,
+      name: params.matchName,
+      access_code: accessCode,
+      status: "waiting",
+    })
+    .select()
+    .single();
+
+  if (matchError || !newMatch) {
+    return { data: null, error: matchError?.message ?? "Erro ao criar nova partida." };
+  }
+
+  // Create teams (preserve colors)
+  const { data: newTeams, error: teamsError } = await supabase
+    .from("teams")
+    .insert([
+      { match_id: newMatch.id, name: winningTeam.name, color: winningTeam.color, score: 0 },
+      { match_id: newMatch.id, name: losingTeam?.name ?? "Time B", color: losingTeam?.color ?? "#EF4444", score: 0 },
+    ])
+    .select();
+
+  if (teamsError || !newTeams || newTeams.length < 2) {
+    await supabase.from("matches").delete().eq("id", newMatch.id);
+    return { data: null, error: teamsError?.message ?? "Erro ao criar times." };
+  }
+
+  const [newWinnerTeam, newNextTeam] = newTeams as Team[];
+
+  // Build match_players rows
+  const rows: {
+    match_id: string;
+    team_id: string | null;
+    player_id: string;
+    position: number | null;
+    queue_position: number | null;
+  }[] = [];
+
+  winnerPlayerIds.forEach((pid, i) => {
+    rows.push({ match_id: newMatch.id, team_id: newWinnerTeam.id, player_id: pid, position: i + 1, queue_position: null });
+  });
+
+  nextTeamPlayerIds.forEach((pid, i) => {
+    rows.push({ match_id: newMatch.id, team_id: newNextTeam.id, player_id: pid, position: i + 1, queue_position: null });
+  });
+
+  newQueueIds.forEach((pid, i) => {
+    rows.push({ match_id: newMatch.id, team_id: null, player_id: pid, position: null, queue_position: i + 1 });
+  });
+
+  const { error: mpError } = await supabase.from("match_players").insert(rows);
+
+  if (mpError) {
+    await supabase.from("matches").delete().eq("id", newMatch.id);
+    return { data: null, error: mpError.message };
+  }
+
+  return { data: newMatch as Match, error: null };
 }

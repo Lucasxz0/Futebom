@@ -14,6 +14,10 @@ import {
   Trophy,
   Zap,
   ArrowLeftRight,
+  Pause,
+  Play,
+  ChevronRight,
+  Shuffle,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import {
@@ -25,10 +29,14 @@ import {
   getMatchEvents,
   getLiveMatchPlayers,
   performSubstitution,
+  pauseTimer,
+  resumeTimer,
+  createNextMatch,
   MatchWithTeams,
   Team,
   MatchEvent,
   LivePlayer,
+  Match,
 } from "@/services/matchService";
 import { useToast } from "@/components/ui/Toast";
 import Button from "@/components/ui/Button";
@@ -45,6 +53,8 @@ interface GoalModalState {
   step: "scorer" | "assist";
   scorerId: string | null;
   scorerName: string | null;
+  /** current active players for this team (post-substitution) */
+  activePlayers: { player_id: string; player_name: string }[];
 }
 
 interface SubModalState {
@@ -52,6 +62,10 @@ interface SubModalState {
   team: TeamWithPlayers | null;
   step: "out" | "in";
   outPlayer: LivePlayer | null;
+}
+
+interface NextMatchModalState {
+  open: boolean;
 }
 
 // ─── Realtime Score — kept in sync via Supabase channel ───────────────────────
@@ -80,25 +94,39 @@ function GoalFlash({ teamColor }: { teamColor: string }) {
   );
 }
 
-// ─── Timer ────────────────────────────────────────────────────────────────────
+// ─── Synced Timer ─────────────────────────────────────────────────────────────
+// Computes elapsed using server-side timer fields so all clients stay in sync.
 
-function useMatchTimer(startedAt: string | null, status: string) {
+function useSyncedTimer(match: MatchWithTeams | null): number {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
-    if (status !== "in_progress" || !startedAt) return;
+    if (!match || match.status !== "in_progress") return;
 
-    const base = Math.floor(
-      (Date.now() - new Date(startedAt).getTime()) / 1000
-    );
-    setElapsed(base);
+    function compute() {
+      if (!match) return 0;
+      const offset = match.timer_offset_seconds ?? 0;
+      if (match.timer_paused) return offset;
+      if (!match.timer_started_at) return offset;
+      const sinceStart = Math.floor(
+        (Date.now() - new Date(match.timer_started_at).getTime()) / 1000
+      );
+      return offset + sinceStart;
+    }
 
-    const interval = setInterval(() => {
-      setElapsed((s) => s + 1);
-    }, 1000);
+    setElapsed(compute());
 
+    // If paused, no need for interval
+    if (match.timer_paused) return;
+
+    const interval = setInterval(() => setElapsed(compute()), 1000);
     return () => clearInterval(interval);
-  }, [startedAt, status]);
+  }, [
+    match?.status,
+    match?.timer_started_at,
+    match?.timer_paused,
+    match?.timer_offset_seconds,
+  ]);
 
   return elapsed;
 }
@@ -110,11 +138,19 @@ function Scoreboard({
   scores,
   elapsed,
   status,
+  isCreator,
+  isPaused,
+  onPause,
+  onResume,
 }: {
   teams: TeamWithPlayers[];
   scores: LiveScores;
   elapsed: number;
   status: string;
+  isCreator: boolean;
+  isPaused: boolean;
+  onPause: () => void;
+  onResume: () => void;
 }) {
   const teamA = teams.find((t) => t.name === "Time A") ?? teams[0];
   const teamB = teams.find((t) => t.name === "Time B") ?? teams[1];
@@ -144,7 +180,7 @@ function Scoreboard({
       />
 
       {/* Timer */}
-      <div className="flex justify-center mb-4">
+      <div className="flex justify-center items-center gap-3 mb-4">
         <div className="flex items-center gap-2 bg-[#0F172A]/80 border border-[#334155] rounded-full px-4 py-1.5">
           <Clock size={13} className="text-[#64748B]" />
           <span className="text-[#94A3B8] text-sm font-mono font-bold tracking-wider">
@@ -154,10 +190,28 @@ function Scoreboard({
               ? "ENCERRADA"
               : formatTime(elapsed)}
           </span>
-          {status === "in_progress" && (
+          {status === "in_progress" && !isPaused && (
             <span className="w-1.5 h-1.5 rounded-full bg-[#22C55E] animate-pulse" />
           )}
+          {status === "in_progress" && isPaused && (
+            <span className="w-1.5 h-1.5 rounded-full bg-[#EAB308]" />
+          )}
         </div>
+
+        {/* Pause / Resume — only for creator */}
+        {isCreator && status === "in_progress" && (
+          <button
+            onClick={isPaused ? onResume : onPause}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold border min-h-[36px] transition-colors ${
+              isPaused
+                ? "bg-[#22C55E]/10 border-[#22C55E]/30 text-[#22C55E] hover:bg-[#22C55E]/20"
+                : "bg-[#EAB308]/10 border-[#EAB308]/30 text-[#EAB308] hover:bg-[#EAB308]/20"
+            }`}
+          >
+            {isPaused ? <Play size={13} /> : <Pause size={13} />}
+            {isPaused ? "Retomar" : "Pausar"}
+          </button>
+        )}
       </div>
 
       {/* Score */}
@@ -267,6 +321,7 @@ function GoalButton({
 }
 
 // ─── Goal Modal (scorer + optional assist) ────────────────────────────────────
+// Uses activePlayers (current state post-substitution) instead of static team.players
 
 function GoalModal({
   modal,
@@ -284,7 +339,8 @@ function GoalModal({
   const team = modal.team!;
   const isBlue = team.color === "#1D4ED8";
 
-  const playersInTeam = team.players;
+  // Use activePlayers passed from parent (reflects substitutions)
+  const playersInTeam = modal.activePlayers;
   const availableForAssist = playersInTeam.filter(
     (p) => p.player_id !== scorerId
   );
@@ -348,7 +404,7 @@ function GoalModal({
 
         {/* Player list */}
         <div className="max-h-[55vh] overflow-y-auto px-4 py-3 space-y-2">
-          {/* "Não sei / Pular" option for assist step */}
+          {/* "Sem assistência" option for assist step */}
           {step === "assist" && (
             <button
               onClick={() => handleAssist(null)}
@@ -513,7 +569,7 @@ function SubstitutionModal({
 
         {/* Step indicator */}
         <div className="flex gap-1 px-5 pt-3">
-          {(["out", "in"] as const).map((s, i) => (
+          {(["out", "in"] as const).map((s) => (
             <div
               key={s}
               className={`h-1 flex-1 rounded-full transition-colors ${
@@ -532,7 +588,7 @@ function SubstitutionModal({
               <p className="text-[#64748B] text-sm">
                 {step === "out"
                   ? "Nenhum jogador em campo neste time."
-                  : "Não há reservas disponíveis."}
+                  : "Não há jogadores na fila de próxima."}
               </p>
             </div>
           )}
@@ -725,6 +781,243 @@ function FinishConfirm({
   );
 }
 
+// ─── Next Match Modal ─────────────────────────────────────────────────────────
+
+function NextMatchModal({
+  teams,
+  scores,
+  queue,
+  matchId,
+  teamSize,
+  matchName,
+  onClose,
+  onCreated,
+}: {
+  teams: TeamWithPlayers[];
+  scores: LiveScores;
+  queue: LivePlayer[];
+  matchId: string;
+  teamSize: number;
+  matchName: string;
+  onClose: () => void;
+  onCreated: (newMatchId: string) => void;
+}) {
+  const { showToast } = useToast();
+  const teamA = teams.find((t) => t.name === "Time A") ?? teams[0];
+  const teamB = teams.find((t) => t.name === "Time B") ?? teams[1];
+  const scoreA = scores[teamA?.id ?? ""] ?? 0;
+  const scoreB = scores[teamB?.id ?? ""] ?? 0;
+  const isTie = scoreA === scoreB;
+
+  // Auto-determine loser if not a tie
+  const autoLoser = !isTie ? (scoreA < scoreB ? teamA : teamB) : null;
+  const [drawnLoser, setDrawnLoser] = useState<TeamWithPlayers | null>(autoLoser);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const nextTeamPlayers = queue.slice(0, teamSize);
+  const hasEnoughQueue = nextTeamPlayers.length >= teamSize;
+  const winner = teams.find((t) => t.id !== drawnLoser?.id && t.id !== "reserves");
+
+  async function handleDraw() {
+    setIsDrawing(true);
+    setDrawnLoser(null);
+    // Animate for 1.8s then reveal
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    const drawn = Math.random() < 0.5 ? teamA : teamB;
+    setDrawnLoser(drawn);
+    setIsDrawing(false);
+  }
+
+  async function handleCreate() {
+    if (!drawnLoser) return;
+    setCreating(true);
+    const { data, error } = await createNextMatch({
+      currentMatchId: matchId,
+      losingTeamId: drawnLoser.id,
+      teamSize,
+      matchName: matchName + " (continuação)",
+    });
+    setCreating(false);
+    if (error) {
+      showToast(error, "error");
+    } else if (data) {
+      onCreated(data.id);
+    }
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-end"
+      style={{ backgroundColor: "rgba(0,0,0,0.85)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ y: "100%" }}
+        animate={{ y: 0 }}
+        exit={{ y: "100%" }}
+        transition={{ type: "spring", stiffness: 380, damping: 36 }}
+        className="w-full max-w-md mx-auto bg-[#1E293B] rounded-t-3xl border-t border-[#334155] overflow-hidden"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+      >
+        {/* Handle */}
+        <div className="w-10 h-1 bg-[#334155] rounded-full mx-auto mt-4 mb-1" />
+
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-[#334155]/60 flex items-center justify-between">
+          <div>
+            <p className="text-xs text-[#64748B] font-medium">Partida encerrada ✅</p>
+            <h3 className="text-[#F1F5F9] font-bold text-xl font-display">
+              Próxima Partida 🔜
+            </h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-[#64748B] hover:text-[#F1F5F9] min-h-[44px] min-w-[44px] flex items-center justify-center"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+          {/* Placar final */}
+          <div className="flex items-center justify-center gap-4 bg-[#0F172A] rounded-2xl py-3 px-4">
+            <div className="text-center">
+              <p className="text-xs font-semibold mb-1" style={{ color: teamA?.color }}>{teamA?.name}</p>
+              <p className="text-[#F1F5F9] text-3xl font-bold font-display">{scoreA}</p>
+            </div>
+            <span className="text-[#475569] text-xl font-display">×</span>
+            <div className="text-center">
+              <p className="text-xs font-semibold mb-1" style={{ color: teamB?.color }}>{teamB?.name}</p>
+              <p className="text-[#F1F5F9] text-3xl font-bold font-display">{scoreB}</p>
+            </div>
+          </div>
+
+          {/* Empate — botão de sorteio */}
+          {isTie && !drawnLoser && (
+            <div className="text-center space-y-3">
+              <p className="text-[#EAB308] text-sm font-semibold">🤝 Empate! Quem sai deve ser sorteado.</p>
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                onClick={handleDraw}
+                disabled={isDrawing}
+                className="w-full flex items-center justify-center gap-2 bg-[#EAB308]/10 border border-[#EAB308]/30 text-[#EAB308] rounded-2xl py-4 text-base font-bold min-h-[60px] disabled:opacity-50 hover:bg-[#EAB308]/20 transition-colors"
+              >
+                {isDrawing ? (
+                  <>
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ repeat: Infinity, duration: 0.4, ease: "linear" }}
+                    >
+                      <Shuffle size={20} />
+                    </motion.div>
+                    Sorteando...
+                  </>
+                ) : (
+                  <>
+                    <Shuffle size={20} />
+                    Sortear quem sai 🎲
+                  </>
+                )}
+              </motion.button>
+            </div>
+          )}
+
+          {/* Resultado do sorteio ou vitória */}
+          {drawnLoser && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-3"
+            >
+              {/* Time que sai */}
+              <div className="bg-[#EF4444]/10 border border-[#EF4444]/30 rounded-2xl px-4 py-3">
+                <p className="text-[#EF4444] text-xs font-semibold mb-1 uppercase tracking-wide">
+                  ← Sai da partida
+                </p>
+                <p className="text-[#F1F5F9] font-bold text-base" style={{ color: drawnLoser.color }}>
+                  {drawnLoser.name}
+                </p>
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {drawnLoser.players.map((p) => (
+                    <span key={p.player_id} className="bg-[#EF4444]/20 text-[#FCA5A5] text-xs px-2 py-0.5 rounded-lg font-medium">
+                      {p.player_name.split(" ")[0]}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Time de próxima que entra */}
+              {hasEnoughQueue ? (
+                <div className="bg-[#22C55E]/10 border border-[#22C55E]/30 rounded-2xl px-4 py-3">
+                  <p className="text-[#22C55E] text-xs font-semibold mb-1 uppercase tracking-wide">
+                    → Entra na partida (Time de Próxima)
+                  </p>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {nextTeamPlayers.map((p, i) => (
+                      <span key={p.player_id} className="bg-[#22C55E]/20 text-[#86EFAC] text-xs px-2 py-0.5 rounded-lg font-medium">
+                        {i + 1}. {p.player_name.split(" ")[0]}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-[#EAB308]/10 border border-[#EAB308]/30 rounded-2xl px-4 py-3">
+                  <p className="text-[#EAB308] text-sm font-semibold">
+                    ⚠️ Não há jogadores suficientes na fila ({queue.length}/{teamSize} necessários).
+                  </p>
+                </div>
+              )}
+
+              {/* Time vencedor que fica */}
+              {winner && (
+                <div className="bg-[#1D4ED8]/10 border border-[#1D4ED8]/30 rounded-2xl px-4 py-3">
+                  <p className="text-[#3B82F6] text-xs font-semibold mb-1 uppercase tracking-wide">
+                    ✓ Fica na partida (vencedor)
+                  </p>
+                  <p className="text-[#F1F5F9] font-bold text-base" style={{ color: winner.color }}>
+                    {winner.name}
+                  </p>
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {winner.players.map((p) => (
+                      <span key={p.player_id} className="bg-[#1D4ED8]/20 text-[#93C5FD] text-xs px-2 py-0.5 rounded-lg font-medium">
+                        {p.player_name.split(" ")[0]}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </div>
+
+        {/* Footer buttons */}
+        <div className="px-5 py-4 border-t border-[#334155]/60 flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 bg-[#0F172A] border border-[#334155] text-[#94A3B8] rounded-xl py-3 text-sm font-semibold min-h-[48px] hover:border-[#475569] transition-colors"
+          >
+            Fechar
+          </button>
+          <Button
+            variant="primary"
+            className="flex-1"
+            disabled={!drawnLoser || !hasEnoughQueue}
+            loading={creating}
+            onClick={handleCreate}
+          >
+            <ChevronRight size={16} />
+            Criar próxima
+          </Button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PlayMatchPage({
@@ -741,6 +1034,7 @@ export default function PlayMatchPage({
   const [events, setEvents] = useState<MatchEvent[]>([]);
   const [livePlayers, setLivePlayers] = useState<LivePlayer[]>([]);
   const [reserves, setReserves] = useState<LivePlayer[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [finishing, setFinishing] = useState(false);
@@ -752,6 +1046,7 @@ export default function PlayMatchPage({
     step: "scorer",
     scorerId: null,
     scorerName: null,
+    activePlayers: [],
   });
   const [subModal, setSubModal] = useState<SubModalState>({
     open: false,
@@ -759,15 +1054,16 @@ export default function PlayMatchPage({
     step: "out",
     outPlayer: null,
   });
+  const [nextMatchModal, setNextMatchModal] = useState<NextMatchModalState>({
+    open: false,
+  });
 
   const minuteRef = useRef(0);
-  const matchRef = useRef<MatchWithTeams | null>(null);
 
-  // Live timer
-  const elapsed = useMatchTimer(
-    match?.started_at ?? null,
-    match?.status ?? "waiting"
-  );
+  // Synced timer — all clients compute the same elapsed from server fields
+  const elapsed = useSyncedTimer(match);
+  const isCreator = !!currentUserId && currentUserId === match?.creator_id;
+  const isPaused = match?.timer_paused ?? false;
 
   // Update minute ref for goal registration
   useEffect(() => {
@@ -776,13 +1072,17 @@ export default function PlayMatchPage({
 
   // ── Load match data ──
   const loadMatch = useCallback(async () => {
+    // Get current user
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    setCurrentUserId(user?.id ?? null);
+
     const { data, error } = await getMatchById(id);
     if (error || !data) {
       showToast(error ?? "Partida não encontrada.", "error");
       return;
     }
 
-    matchRef.current = data;
     setMatch(data);
 
     // Build initial scores map from teams
@@ -796,7 +1096,7 @@ export default function PlayMatchPage({
     const { data: evts } = await getMatchEvents(id);
     setEvents(evts);
 
-    // Load live players (active + reserves)
+    // Load live players (active + reserves sorted by queue_position)
     const { active, reserves: res } = await getLiveMatchPlayers(id);
     setLivePlayers(active);
     setReserves(res);
@@ -832,7 +1132,7 @@ export default function PlayMatchPage({
       )
       .subscribe();
 
-    // Subscribe to match_events (new goals)
+    // Subscribe to match_events (new goals / substitutions)
     const eventsChannel = supabase
       .channel(`match-events-${id}`)
       .on(
@@ -844,14 +1144,13 @@ export default function PlayMatchPage({
           filter: `match_id=eq.${id}`,
         },
         async () => {
-          // Reload events to get player names
           const { data: evts } = await getMatchEvents(id);
           setEvents(evts);
         }
       )
       .subscribe();
 
-    // Subscribe to match status changes
+    // Subscribe to match status AND timer changes
     const matchChannel = supabase
       .channel(`match-status-${id}`)
       .on(
@@ -863,9 +1162,19 @@ export default function PlayMatchPage({
           filter: `id=eq.${id}`,
         },
         (payload) => {
-          const updated = payload.new as MatchWithTeams;
+          const updated = payload.new as Match;
           setMatch((prev) =>
-            prev ? { ...prev, status: updated.status, started_at: updated.started_at, finished_at: updated.finished_at } : prev
+            prev
+              ? {
+                  ...prev,
+                  status: updated.status,
+                  started_at: updated.started_at,
+                  finished_at: updated.finished_at,
+                  timer_started_at: updated.timer_started_at,
+                  timer_offset_seconds: updated.timer_offset_seconds,
+                  timer_paused: updated.timer_paused,
+                }
+              : prev
           );
         }
       )
@@ -883,7 +1192,6 @@ export default function PlayMatchPage({
           filter: `match_id=eq.${id}`,
         },
         async () => {
-          // Reload all live players to reflect the substitution
           const { active, reserves: res } = await getLiveMatchPlayers(id);
           setLivePlayers(active);
           setReserves(res);
@@ -908,16 +1216,58 @@ export default function PlayMatchPage({
     if (error) {
       showToast(error, "error");
     } else {
+      const now = new Date().toISOString();
       setMatch((prev) =>
         prev
-          ? { ...prev, status: "in_progress", started_at: new Date().toISOString() }
+          ? {
+              ...prev,
+              status: "in_progress",
+              started_at: now,
+              timer_started_at: now,
+              timer_offset_seconds: 0,
+              timer_paused: false,
+            }
+          : prev
+      );
+    }
+  }
+
+  async function handlePause() {
+    const { error } = await pauseTimer(id, elapsed);
+    if (error) showToast(error, "error");
+    else {
+      setMatch((prev) =>
+        prev ? { ...prev, timer_paused: true, timer_offset_seconds: elapsed } : prev
+      );
+    }
+  }
+
+  async function handleResume() {
+    const { error } = await resumeTimer(id);
+    if (error) showToast(error, "error");
+    else {
+      setMatch((prev) =>
+        prev
+          ? { ...prev, timer_paused: false, timer_started_at: new Date().toISOString() }
           : prev
       );
     }
   }
 
   function openGoalModal(team: TeamWithPlayers) {
-    setGoalModal({ open: true, team, step: "scorer", scorerId: null, scorerName: null });
+    // Pass current active players for this team (reflects substitutions)
+    const activePlayers = livePlayers
+      .filter((p) => p.team_id === team.id)
+      .map((p) => ({ player_id: p.player_id, player_name: p.player_name }));
+
+    setGoalModal({
+      open: true,
+      team,
+      step: "scorer",
+      scorerId: null,
+      scorerName: null,
+      activePlayers,
+    });
   }
 
   async function handleGoalConfirm(scorerId: string | null, assistId: string | null) {
@@ -936,9 +1286,7 @@ export default function PlayMatchPage({
     if (error) {
       showToast(error, "error");
     } else {
-      // Optimistic score update
       setScores((prev) => ({ ...prev, [team.id]: (prev[team.id] ?? 0) + 1 }));
-      // Goal flash
       setGoalFlash(team.color);
       setTimeout(() => setGoalFlash(null), 1500);
       showToast(`Gol do ${team.name}! ⚽`, "success");
@@ -977,23 +1325,24 @@ export default function PlayMatchPage({
     if (error) {
       showToast(error, "error");
     } else {
-      // Optimistic update — swap team_id in local state
-      setLivePlayers((prev) =>
-        prev.map((p) =>
-          p.player_id === outPlayerId
-            ? { ...p, team_id: null }
-            : p.player_id === inPlayerId
-            ? { ...p, team_id: subModal.team!.id }
-            : p
-        ).filter((p) => p.team_id !== null)
-      );
-      setReserves((prev) => {
-        const outP = livePlayers.find((p) => p.player_id === outPlayerId);
-        const inIdx = prev.findIndex((p) => p.player_id === inPlayerId);
-        const next = prev.filter((p) => p.player_id !== inPlayerId);
-        if (outP) next.push({ ...outP, team_id: null });
+      // Optimistic update — move players between active and reserves
+      const teamId = subModal.team.id;
+      const outP = livePlayers.find((p) => p.player_id === outPlayerId);
+      const inP = reserves.find((p) => p.player_id === inPlayerId);
+
+      setLivePlayers((prev) => {
+        const next = prev.filter((p) => p.player_id !== outPlayerId);
+        if (inP) next.push({ ...inP, team_id: teamId, queue_position: null });
         return next;
       });
+
+      setReserves((prev) => {
+        const maxQueuePos = Math.max(0, ...prev.map((p) => p.queue_position ?? 0));
+        const next = prev.filter((p) => p.player_id !== inPlayerId);
+        if (outP) next.push({ ...outP, team_id: null, queue_position: maxQueuePos + 1 });
+        return next;
+      });
+
       showToast("Substituição realizada! 🔄", "success");
     }
   }
@@ -1006,8 +1355,8 @@ export default function PlayMatchPage({
       showToast(error, "error");
     } else {
       setShowFinishConfirm(false);
+      setMatch((prev) => prev ? { ...prev, status: "finished" } : prev);
       showToast("Partida encerrada!", "success");
-      setTimeout(() => router.push("/dashboard"), 1500);
     }
   }
 
@@ -1015,6 +1364,7 @@ export default function PlayMatchPage({
   const isLive = match?.status === "in_progress";
   const isFinished = match?.status === "finished";
   const mainTeams = match?.teams.filter((t) => t.id !== "reserves") ?? [];
+  const teamSize = mainTeams[0]?.players.length || 5;
 
   return (
     <>
@@ -1079,6 +1429,10 @@ export default function PlayMatchPage({
                 scores={scores}
                 elapsed={elapsed}
                 status={match.status}
+                isCreator={isCreator}
+                isPaused={isPaused}
+                onPause={handlePause}
+                onResume={handleResume}
               />
 
               {/* Start button — only when waiting */}
@@ -1119,13 +1473,13 @@ export default function PlayMatchPage({
                   <div className="grid grid-cols-2 gap-3">
                     {mainTeams.slice(0, 2).map((team) => {
                       const teamActive = livePlayers.filter((p) => p.team_id === team.id);
-                      const hasReserves = reserves.length > 0;
+                      const hasQueue = reserves.length > 0;
                       const isBlue = team.color === "#1D4ED8";
                       return (
                         <button
                           key={team.id}
                           onClick={() => openSubModal(team)}
-                          disabled={!hasReserves || teamActive.length === 0}
+                          disabled={!hasQueue || teamActive.length === 0}
                           className={`flex items-center justify-center gap-2 rounded-xl py-2.5 border text-sm font-semibold min-h-[44px] transition-all disabled:opacity-30 ${
                             isBlue
                               ? "bg-[#1D4ED8]/10 border-[#1D4ED8]/30 text-[#3B82F6] hover:bg-[#1D4ED8]/20"
@@ -1139,45 +1493,79 @@ export default function PlayMatchPage({
                     })}
                   </div>
 
-                  {/* Reserves count */}
+                  {/* Time de Próxima queue */}
                   {reserves.length > 0 && (
-                    <div className="flex items-center gap-2 bg-[#1E293B] border border-[#334155]/60 rounded-xl px-4 py-2">
-                      <span className="text-[#64748B] text-xs font-medium">
-                        Reservas no banco:
-                      </span>
-                      <div className="flex gap-1 flex-wrap">
-                        {reserves.map((r) => (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="bg-[#1E293B] border border-[#334155]/60 rounded-2xl px-4 py-3 space-y-2"
+                    >
+                      <p className="text-[#64748B] text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5">
+                        🔜 Time de Próxima
+                        <span className="bg-[#334155] text-[#94A3B8] text-xs px-1.5 py-0.5 rounded-full font-mono ml-1">
+                          {reserves.length}
+                        </span>
+                      </p>
+                      <div className="flex gap-1.5 flex-wrap">
+                        {reserves.map((r, i) => (
                           <span
                             key={r.player_id}
-                            className="bg-[#334155] text-[#94A3B8] text-xs px-2 py-0.5 rounded-lg font-medium"
+                            className={`text-xs px-2.5 py-1 rounded-xl font-medium flex items-center gap-1 ${
+                              i < teamSize
+                                ? "bg-[#22C55E]/15 text-[#86EFAC] border border-[#22C55E]/30"
+                                : "bg-[#334155] text-[#94A3B8]"
+                            }`}
                           >
+                            <span className="text-[#475569] text-xs">{i + 1}.</span>
                             {r.player_name.split(" ")[0]}
                           </span>
                         ))}
                       </div>
-                    </div>
+                      <p className="text-[#475569] text-xs">
+                        Os primeiros {teamSize} entram na próxima partida ↑
+                      </p>
+                    </motion.div>
                   )}
                 </div>
               )}
 
-              {/* Finished message */}
+              {/* Finished — next match section */}
               {isFinished && (
                 <motion.div
                   initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  className="bg-[#EAB308]/10 border border-[#EAB308]/30 rounded-2xl px-5 py-4 text-center"
+                  className="space-y-3"
                 >
-                  <Trophy size={32} className="text-[#EAB308] mx-auto mb-2" />
-                  <p className="text-[#F1F5F9] font-bold text-lg font-display">
-                    Partida encerrada!
-                  </p>
-                  <Button
-                    variant="primary"
-                    className="mt-4 w-full"
-                    onClick={() => router.push("/dashboard")}
-                  >
-                    Voltar ao início
-                  </Button>
+                  <div className="bg-[#EAB308]/10 border border-[#EAB308]/30 rounded-2xl px-5 py-4 text-center">
+                    <Trophy size={32} className="text-[#EAB308] mx-auto mb-2" />
+                    <p className="text-[#F1F5F9] font-bold text-lg font-display">
+                      Partida encerrada!
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {reserves.length >= teamSize && (
+                      <Button
+                        variant="primary"
+                        onClick={() => setNextMatchModal({ open: true })}
+                      >
+                        🔜 Próxima Partida
+                      </Button>
+                    )}
+                    <Button
+                      variant={reserves.length >= teamSize ? "secondary" : "primary"}
+                      className="w-full"
+                      onClick={() => router.push("/dashboard")}
+                    >
+                      Voltar ao início
+                    </Button>
+                  </div>
+
+                  {reserves.length > 0 && reserves.length < teamSize && (
+                    <p className="text-[#64748B] text-xs text-center">
+                      ⚠️ Apenas {reserves.length} na fila — precisam de {teamSize} para a próxima.
+                    </p>
+                  )}
                 </motion.div>
               )}
 
@@ -1226,6 +1614,26 @@ export default function PlayMatchPage({
             onConfirm={handleFinish}
             onCancel={() => setShowFinishConfirm(false)}
             loading={finishing}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Next Match Modal */}
+      <AnimatePresence>
+        {nextMatchModal.open && match && (
+          <NextMatchModal
+            teams={mainTeams}
+            scores={scores}
+            queue={reserves}
+            matchId={id}
+            teamSize={teamSize}
+            matchName={match.name}
+            onClose={() => setNextMatchModal({ open: false })}
+            onCreated={(newMatchId) => {
+              setNextMatchModal({ open: false });
+              showToast("Nova partida criada! 🚀", "success");
+              setTimeout(() => router.push(`/match/${newMatchId}/lobby`), 800);
+            }}
           />
         )}
       </AnimatePresence>
