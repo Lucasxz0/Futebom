@@ -26,10 +26,12 @@ import SkeletonCard from "@/components/ui/SkeletonCard";
 function PlayerSelectItem({
   player,
   selected,
+  arrivalNumber,
   onToggle,
 }: {
   player: Player;
   selected: boolean;
+  arrivalNumber: number | null; // position in click order (1-based)
   onToggle: (id: string) => void;
 }) {
   const isPermanent = player.type === "permanent";
@@ -52,9 +54,9 @@ function PlayerSelectItem({
           : "bg-[#1E293B] border-[#334155]/60 hover:border-[#475569]"
       }`}
     >
-      {/* Avatar */}
+      {/* Avatar — shows arrival number when selected */}
       <div
-        className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 font-bold font-display text-sm transition-colors ${
+        className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 font-bold font-display text-sm transition-colors relative ${
           selected
             ? "bg-[#1D4ED8] text-white"
             : isPermanent
@@ -62,7 +64,11 @@ function PlayerSelectItem({
             : "bg-[#334155] text-[#94A3B8]"
         }`}
       >
-        {selected ? <Check size={16} /> : initials}
+        {selected && arrivalNumber !== null ? (
+          <span className="text-base font-black">{arrivalNumber}°</span>
+        ) : (
+          initials
+        )}
       </div>
 
       {/* Name + type */}
@@ -76,10 +82,12 @@ function PlayerSelectItem({
         </p>
         <span
           className={`text-xs flex items-center gap-1 ${
-            isPermanent ? "text-[#3B82F6]" : "text-[#64748B]"
+            selected ? "text-[#93C5FD]" : isPermanent ? "text-[#3B82F6]" : "text-[#64748B]"
           }`}
         >
-          {isPermanent ? (
+          {selected ? (
+            <>✓ {arrivalNumber === 1 ? "Chegou primeiro" : `Chegada nº ${arrivalNumber}`}</>
+          ) : isPermanent ? (
             <><ShieldCheck size={10} /> Fixo</>
           ) : (
             <><Zap size={10} /> Avulso</>
@@ -148,38 +156,44 @@ export default function NewMatchPage() {
   const { players, permanentPlayers, casualPlayers, loading } = usePlayers();
 
   const [matchName, setMatchName] = useState("Futebom");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Ordered array — index = arrival order. First clicked = chegou primeiro.
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [teamSize, setTeamSize] = useState(5);
   const [creating, setCreating] = useState(false);
   const [showPermanent, setShowPermanent] = useState(true);
   const [showCasual, setShowCasual] = useState(true);
   const nameRef = useRef<HTMLInputElement>(null);
 
-  // Auto-select all permanent players on load
+  // Auto-select all permanent players on load (keeps their list order as arrival order)
   useEffect(() => {
     if (permanentPlayers.length > 0) {
-      setSelectedIds(new Set(permanentPlayers.map((p) => p.id)));
+      setSelectedIds(permanentPlayers.map((p) => p.id));
     }
   }, [permanentPlayers.length]);
 
   function togglePlayer(id: string) {
     setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+      if (prev.includes(id)) {
+        // Remove and re-number the rest
+        return prev.filter((pid) => pid !== id);
+      } else {
+        // Add to end — this is their arrival position
+        return [...prev, id];
+      }
     });
   }
 
   function selectAll() {
-    setSelectedIds(new Set(players.map((p) => p.id)));
+    // Select all in display order (permanent first, then casual)
+    setSelectedIds(players.map((p) => p.id));
   }
 
   function clearAll() {
-    setSelectedIds(new Set());
+    setSelectedIds([]);
   }
 
-  const selectedCount = selectedIds.size;
+  const selectedSet = new Set(selectedIds);
+  const selectedCount = selectedIds.length;
   const minRequired = teamSize * 2;
   const canCreate = selectedCount >= minRequired && !creating;
   const shortfall = Math.max(0, minRequired - selectedCount);
@@ -188,19 +202,14 @@ export default function NewMatchPage() {
     e.preventDefault();
     if (!canCreate) return;
 
-    // Sort selected players by created_at (order of arrival)
-    // First (teamSize*2) will be randomly drawn; rest go to queue in order
-    const sortedPlayerIds = players
-      .filter((p) => selectedIds.has(p.id))
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-      .map((p) => p.id);
-
+    // selectedIds already in click order = order of arrival
+    // First (teamSize*2) will be randomly drawn into teams; rest go to queue in order
     setCreating(true);
     const { data, error } = await createMatch({
       name: matchName.trim() || "Futebom",
-      playerIds: sortedPlayerIds,
+      playerIds: selectedIds,
       teamSize,
-      isFirstMatch: true, // sorteio entre os primeiros (teamSize*2)
+      isFirstMatch: true,
     });
     setCreating(false);
 
@@ -349,7 +358,7 @@ export default function NewMatchPage() {
                   Fixos
                 </span>
                 <span className="text-[#64748B] text-xs ml-1">
-                  ({permanentPlayers.filter((p) => selectedIds.has(p.id)).length}/
+                  ({permanentPlayers.filter((p) => selectedSet.has(p.id)).length}/
                   {permanentPlayers.length})
                 </span>
                 <span className="ml-auto text-[#64748B]">
@@ -364,14 +373,18 @@ export default function NewMatchPage() {
                     exit={{ opacity: 0, height: 0 }}
                     className="space-y-2 overflow-hidden"
                   >
-                    {permanentPlayers.map((p) => (
-                      <PlayerSelectItem
-                        key={p.id}
-                        player={p}
-                        selected={selectedIds.has(p.id)}
-                        onToggle={togglePlayer}
-                      />
-                    ))}
+                    {permanentPlayers.map((p) => {
+                      const idx = selectedIds.indexOf(p.id);
+                      return (
+                        <PlayerSelectItem
+                          key={p.id}
+                          player={p}
+                          selected={idx !== -1}
+                          arrivalNumber={idx !== -1 ? idx + 1 : null}
+                          onToggle={togglePlayer}
+                        />
+                      );
+                    })}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -391,7 +404,7 @@ export default function NewMatchPage() {
                   Avulsos
                 </span>
                 <span className="text-[#64748B] text-xs ml-1">
-                  ({casualPlayers.filter((p) => selectedIds.has(p.id)).length}/
+                  ({casualPlayers.filter((p) => selectedSet.has(p.id)).length}/
                   {casualPlayers.length})
                 </span>
                 <span className="ml-auto text-[#64748B]">
@@ -406,14 +419,18 @@ export default function NewMatchPage() {
                     exit={{ opacity: 0, height: 0 }}
                     className="space-y-2 overflow-hidden"
                   >
-                    {casualPlayers.map((p) => (
-                      <PlayerSelectItem
-                        key={p.id}
-                        player={p}
-                        selected={selectedIds.has(p.id)}
-                        onToggle={togglePlayer}
-                      />
-                    ))}
+                    {casualPlayers.map((p) => {
+                      const idx = selectedIds.indexOf(p.id);
+                      return (
+                        <PlayerSelectItem
+                          key={p.id}
+                          player={p}
+                          selected={idx !== -1}
+                          arrivalNumber={idx !== -1 ? idx + 1 : null}
+                          onToggle={togglePlayer}
+                        />
+                      );
+                    })}
                   </motion.div>
                 )}
               </AnimatePresence>
