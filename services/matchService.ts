@@ -680,12 +680,173 @@ export async function addPlayerToQueue(
 }
 
 /**
+ * Remove a player from the waiting queue and reorder remaining positions.
+ * Only affects players with team_id = null.
+ */
+export async function removeFromQueue(
+  matchId: string,
+  matchPlayerId: string
+): Promise<{ error: string | null }> {
+  const supabase = createClient();
+
+  // 1. Get queue_position of the player being removed
+  const { data: target } = await supabase
+    .from("match_players")
+    .select("queue_position")
+    .eq("id", matchPlayerId)
+    .eq("match_id", matchId)
+    .is("team_id", null)
+    .maybeSingle();
+
+  if (!target) return { error: "Jogador não encontrado na fila." };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const removedPos = (target as any)?.queue_position ?? 0;
+
+  // 2. Delete the row
+  const { error: deleteError } = await supabase
+    .from("match_players")
+    .delete()
+    .eq("id", matchPlayerId);
+
+  if (deleteError) return { error: deleteError.message };
+
+  // 3. Fetch all players with queue_position > removed
+  const { data: laterPlayers } = await supabase
+    .from("match_players")
+    .select("id, queue_position")
+    .eq("match_id", matchId)
+    .is("team_id", null)
+    .gt("queue_position", removedPos);
+
+  // 4. Shift each down by 1 to compact the queue
+  if (laterPlayers && laterPlayers.length > 0) {
+    await Promise.all(
+      laterPlayers.map((p) =>
+        supabase
+          .from("match_players")
+          .update({ queue_position: (p.queue_position ?? 2) - 1 })
+          .eq("id", p.id)
+      )
+    );
+  }
+
+  return { error: null };
+}
+
+/**
+ * Create a match with manually assigned teams (N teams, no shuffle).
+ * Used by the ManualDraftBoard component.
+ */
+export interface CreateManualMatchInput {
+  name: string;
+  teams: { name: string; color: string; playerIds: string[] }[];
+  queueIds: string[];
+}
+
+export async function createManualMatch(
+  input: CreateManualMatchInput
+): Promise<{ data: Match | null; error: string | null }> {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { data: null, error: "Usuário não autenticado." };
+
+  // Generate a unique access code
+  let accessCode = generateAccessCode(6);
+  const { data: existing } = await supabase
+    .from("matches")
+    .select("id")
+    .eq("access_code", accessCode)
+    .maybeSingle();
+  if (existing) accessCode = generateAccessCode(6);
+
+  // 1. Insert match
+  const { data: match, error: matchError } = await supabase
+    .from("matches")
+    .insert({
+      creator_id: user.id,
+      name: input.name.trim() || "Futebom",
+      access_code: accessCode,
+      status: "waiting",
+    })
+    .select()
+    .single();
+
+  if (matchError || !match) {
+    return { data: null, error: matchError?.message ?? "Erro ao criar partida." };
+  }
+
+  // 2. Insert all teams
+  const teamRows = input.teams.map((t) => ({
+    match_id: match.id,
+    name: t.name,
+    color: t.color,
+    score: 0,
+  }));
+
+  const { data: createdTeams, error: teamsError } = await supabase
+    .from("teams")
+    .insert(teamRows)
+    .select();
+
+  if (teamsError || !createdTeams) {
+    await supabase.from("matches").delete().eq("id", match.id);
+    return { data: null, error: teamsError?.message ?? "Erro ao criar times." };
+  }
+
+  // 3. Build match_players rows
+  const mpRows: {
+    match_id: string;
+    team_id: string | null;
+    player_id: string;
+    position: number | null;
+    queue_position: number | null;
+  }[] = [];
+
+  input.teams.forEach((teamInput, teamIdx) => {
+    const createdTeam = createdTeams[teamIdx];
+    if (!createdTeam) return;
+    teamInput.playerIds.forEach((pid, pos) => {
+      mpRows.push({
+        match_id: match.id,
+        team_id: createdTeam.id,
+        player_id: pid,
+        position: pos + 1,
+        queue_position: null,
+      });
+    });
+  });
+
+  input.queueIds.forEach((pid, i) => {
+    mpRows.push({
+      match_id: match.id,
+      team_id: null,
+      player_id: pid,
+      position: null,
+      queue_position: i + 1,
+    });
+  });
+
+  const { error: mpError } = await supabase.from("match_players").insert(mpRows);
+
+  if (mpError) {
+    await supabase.from("matches").delete().eq("id", match.id);
+    return { data: null, error: mpError.message };
+  }
+
+  return { data: match as Match, error: null };
+}
+
+/**
  * Create the next match when the current one ends.
  *
  * - Winning team stays as-is
- * - First teamSize players from the queue enter as the new team
- * - Losing team players go to END of new queue (after remaining queue players)
- * - No shuffle — purely by queue_position order
+ * - First teamSize players from queue enter as new team
+ * - If queue is short, fill remaining slots with first loser players (by position)
+ * - Losing team remainder goes to END of new queue
+ * - No shuffle — purely by queue_position / position order
  */
 export async function createNextMatch(params: {
   currentMatchId: string;
@@ -703,7 +864,7 @@ export async function createNextMatch(params: {
   // Fetch all current match players
   const { data: currentPlayers, error: cpError } = await supabase
     .from("match_players")
-    .select("player_id, team_id, queue_position")
+    .select("player_id, team_id, queue_position, position")
     .eq("match_id", params.currentMatchId);
 
   if (cpError || !currentPlayers) {
@@ -729,8 +890,10 @@ export async function createNextMatch(params: {
     .filter((p) => p.team_id === winningTeam.id)
     .map((p) => p.player_id);
 
+  // Loser players sorted by their position in the team
   const loserPlayerIds = currentPlayers
     .filter((p) => p.team_id === params.losingTeamId)
+    .sort((a, b) => (a.position ?? 999) - (b.position ?? 999))
     .map((p) => p.player_id);
 
   // Queue sorted by position
@@ -739,16 +902,29 @@ export async function createNextMatch(params: {
     .sort((a, b) => ((a.queue_position ?? 9999) - (b.queue_position ?? 9999)))
     .map((p) => p.player_id);
 
-  // Next team = first teamSize from queue
-  const nextTeamPlayerIds = queuePlayerIds.slice(0, params.teamSize);
-  const remainingQueueIds = queuePlayerIds.slice(params.teamSize);
+  // Build next team: queue first, fill from losers if queue is short
+  let nextTeamPlayerIds: string[];
+  let newQueueIds: string[];
 
-  if (nextTeamPlayerIds.length < params.teamSize) {
-    return { data: null, error: "Não há jogadores suficientes na fila para a próxima partida." };
+  const needed = params.teamSize - queuePlayerIds.length;
+
+  if (needed > 0) {
+    // Queue is short — fill with first N losers
+    const fillFrom = loserPlayerIds.slice(0, needed);
+    const loserRemainder = loserPlayerIds.slice(needed);
+    nextTeamPlayerIds = [...queuePlayerIds, ...fillFrom];
+    newQueueIds = [...loserRemainder];
+  } else {
+    // Enough in queue
+    nextTeamPlayerIds = queuePlayerIds.slice(0, params.teamSize);
+    const remainingQueue = queuePlayerIds.slice(params.teamSize);
+    newQueueIds = [...remainingQueue, ...loserPlayerIds];
   }
 
-  // New queue: remaining queue first, then losers at end
-  const newQueueIds = [...remainingQueueIds, ...loserPlayerIds];
+  // Validate total
+  if (nextTeamPlayerIds.length < params.teamSize) {
+    return { data: null, error: "Não há jogadores suficientes (fila + perdedores) para a próxima partida." };
+  }
 
   // Generate access code
   let accessCode = generateAccessCode(6);

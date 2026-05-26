@@ -38,6 +38,7 @@ import {
   LivePlayer,
   Match,
   addPlayerToQueue,
+  removeFromQueue,
 } from "@/services/matchService";
 import { usePlayers } from "@/hooks/usePlayers";
 import { useToast } from "@/components/ui/Toast";
@@ -1004,10 +1005,17 @@ function NextMatchModal({
   const hasEnoughQueue = nextTeamPlayers.length >= teamSize;
   const winner = teams.find((t) => t.id !== drawnLoser?.id && t.id !== "reserves");
 
+  // How many losers would need to fill the gap
+  const queueShortfall = Math.max(0, teamSize - queue.length);
+  const loserPlayers = drawnLoser
+    ? teams.find((t) => t.id === drawnLoser.id)?.players ?? []
+    : [];
+  const fillFromLosers = loserPlayers.slice(0, queueShortfall);
+  const canFillWithLosers = queueShortfall === 0 || fillFromLosers.length >= queueShortfall;
+
   async function handleDraw() {
     setIsDrawing(true);
     setDrawnLoser(null);
-    // Animate for 1.8s then reveal
     await new Promise((resolve) => setTimeout(resolve, 1800));
     const drawn = Math.random() < 0.5 ? teamA : teamB;
     setDrawnLoser(drawn);
@@ -1149,10 +1157,37 @@ function NextMatchModal({
                     ))}
                   </div>
                 </div>
+              ) : canFillWithLosers ? (
+                <div className="bg-[#22C55E]/10 border border-[#22C55E]/30 rounded-2xl px-4 py-3 space-y-2">
+                  <p className="text-[#22C55E] text-xs font-semibold uppercase tracking-wide">
+                    → Entra na partida (fila + perdedores)
+                  </p>
+                  {/* Queue players */}
+                  {queue.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {queue.map((p, i) => (
+                        <span key={p.player_id} className="bg-[#22C55E]/20 text-[#86EFAC] text-xs px-2 py-0.5 rounded-lg font-medium">
+                          {i + 1}. {p.player_name.split(" ")[0]}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {/* Fill from losers */}
+                  <div>
+                    <p className="text-[#EAB308] text-xs font-medium mb-1">⚡ Completando com {fillFromLosers.length} do time que saiu:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {fillFromLosers.map((p, i) => (
+                        <span key={p.player_id} className="bg-[#EAB308]/20 text-[#FDE68A] text-xs px-2 py-0.5 rounded-lg font-medium">
+                          {queue.length + i + 1}. {p.player_name.split(" ")[0]}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               ) : (
-                <div className="bg-[#EAB308]/10 border border-[#EAB308]/30 rounded-2xl px-4 py-3">
-                  <p className="text-[#EAB308] text-sm font-semibold">
-                    ⚠️ Não há jogadores suficientes na fila ({queue.length}/{teamSize} necessários).
+                <div className="bg-[#EF4444]/10 border border-[#EF4444]/30 rounded-2xl px-4 py-3">
+                  <p className="text-[#EF4444] text-sm font-semibold">
+                    ⚠️ Não há jogadores suficientes mesmo com o time que perdeu.
                   </p>
                 </div>
               )}
@@ -1190,7 +1225,7 @@ function NextMatchModal({
           <Button
             variant="primary"
             className="flex-1"
-            disabled={!drawnLoser || !hasEnoughQueue}
+            disabled={!drawnLoser || !canFillWithLosers}
             loading={creating}
             onClick={handleCreate}
           >
@@ -1245,6 +1280,7 @@ export default function PlayMatchPage({
   const [addQueueModal, setAddQueueModal] = useState<AddQueueModalState>({
     open: false,
   });
+  const [removingFromQueue, setRemovingFromQueue] = useState<string | null>(null);
 
   const { addPlayer } = usePlayers(); // For adding new players on the fly
   const minuteRef = useRef(0);
@@ -1586,8 +1622,23 @@ export default function PlayMatchPage({
 
   async function handleAddExistingToQueue(playerId: string) {
     const res = await addPlayerToQueue(id, playerId);
-    // Realtime will update the list automatically
     return res;
+  }
+
+  async function handleRemoveFromQueue(matchPlayerId: string) {
+    setRemovingFromQueue(matchPlayerId);
+    const { error } = await removeFromQueue(id, matchPlayerId);
+    setRemovingFromQueue(null);
+    if (error) {
+      showToast(error, "error");
+    } else {
+      setReserves((prev) => {
+        const filtered = prev.filter((r) => r.match_player_id !== matchPlayerId);
+        // Re-compact queue_position locally
+        return filtered.map((r, i) => ({ ...r, queue_position: i + 1 }));
+      });
+      showToast("Jogador removido da fila.", "info");
+    }
   }
 
   async function handleCreateNewAndQueue(name: string) {
@@ -1755,19 +1806,41 @@ export default function PlayMatchPage({
                     
                     {reserves.length > 0 ? (
                       <>
-                        <div className="flex gap-1.5 flex-wrap">
+                        <div className="space-y-1.5">
                           {reserves.map((r, i) => (
-                            <span
+                            <div
                               key={r.player_id}
-                              className={`text-xs px-2.5 py-1 rounded-xl font-medium flex items-center gap-1 ${
+                              className={`flex items-center gap-2 px-2 py-1.5 rounded-xl ${
                                 i < teamSize
-                                  ? "bg-[#22C55E]/15 text-[#86EFAC] border border-[#22C55E]/30"
-                                  : "bg-[#334155] text-[#94A3B8]"
+                                  ? "bg-[#22C55E]/10 border border-[#22C55E]/25"
+                                  : "bg-[#1E293B]"
                               }`}
                             >
-                              <span className="text-[#475569] text-xs">{i + 1}.</span>
-                              {r.player_name.split(" ")[0]}
-                            </span>
+                              <span className="text-[#475569] text-xs font-mono w-4 shrink-0">
+                                {i + 1}.
+                              </span>
+                              <span
+                                className={`text-sm font-medium flex-1 truncate ${
+                                  i < teamSize ? "text-[#86EFAC]" : "text-[#94A3B8]"
+                                }`}
+                              >
+                                {r.player_name}
+                              </span>
+                              {isCreator && (
+                                <button
+                                  onClick={() => handleRemoveFromQueue(r.match_player_id)}
+                                  disabled={removingFromQueue === r.match_player_id}
+                                  className="text-[#475569] hover:text-[#EF4444] transition-colors p-1 shrink-0 disabled:opacity-40"
+                                  title="Remover da fila"
+                                >
+                                  {removingFromQueue === r.match_player_id ? (
+                                    <span className="text-xs">...</span>
+                                  ) : (
+                                    <X size={13} />
+                                  )}
+                                </button>
+                              )}
+                            </div>
                           ))}
                         </div>
                         <p className="text-[#475569] text-xs">
@@ -1796,28 +1869,20 @@ export default function PlayMatchPage({
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
-                    {reserves.length >= teamSize && (
-                      <Button
-                        variant="primary"
-                        onClick={() => setNextMatchModal({ open: true })}
-                      >
-                        🔜 Próxima Partida
-                      </Button>
-                    )}
                     <Button
-                      variant={reserves.length >= teamSize ? "secondary" : "primary"}
+                      variant="primary"
+                      onClick={() => setNextMatchModal({ open: true })}
+                    >
+                      🔜 Próxima Partida
+                    </Button>
+                    <Button
+                      variant="secondary"
                       className="w-full"
                       onClick={() => router.push("/dashboard")}
                     >
                       Voltar ao início
                     </Button>
                   </div>
-
-                  {reserves.length > 0 && reserves.length < teamSize && (
-                    <p className="text-[#64748B] text-xs text-center">
-                      ⚠️ Apenas {reserves.length} na fila — precisam de {teamSize} para a próxima.
-                    </p>
-                  )}
                 </motion.div>
               )}
 

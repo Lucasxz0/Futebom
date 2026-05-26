@@ -13,13 +13,15 @@ import {
   ShieldCheck,
   Check,
   Swords,
+  Layout,
 } from "lucide-react";
 import { usePlayers } from "@/hooks/usePlayers";
 import { Player } from "@/services/playerService";
-import { createMatch } from "@/services/matchService";
+import { createMatch, createManualMatch } from "@/services/matchService";
 import { useToast } from "@/components/ui/Toast";
 import Button from "@/components/ui/Button";
 import SkeletonCard from "@/components/ui/SkeletonCard";
+import ManualDraftBoard from "@/components/match/ManualDraftBoard";
 
 // ─── Player Selector Item ─────────────────────────────────────────────────────
 
@@ -162,6 +164,7 @@ export default function NewMatchPage() {
   const [creating, setCreating] = useState(false);
   const [showPermanent, setShowPermanent] = useState(true);
   const [showCasual, setShowCasual] = useState(true);
+  const [showManualDraft, setShowManualDraft] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
   // Auto-select all permanent players on load (keeps their list order as arrival order)
@@ -212,6 +215,26 @@ export default function NewMatchPage() {
       isFirstMatch: true,
     });
     setCreating(false);
+
+    if (error) {
+      showToast(error, "error");
+      return;
+    }
+
+    if (data) {
+      router.push(`/match/${data.id}/lobby`);
+    }
+  }
+
+  async function handleCreateManual(
+    teams: { name: string; color: string; playerIds: string[] }[],
+    queueIds: string[]
+  ) {
+    const { data, error } = await createManualMatch({
+      name: matchName.trim() || "Futebom",
+      teams,
+      queueIds,
+    });
 
     if (error) {
       showToast(error, "error");
@@ -456,7 +479,7 @@ export default function NewMatchPage() {
         </AnimatePresence>
 
         {/* Create button */}
-        <div className="pt-2 pb-6">
+        <div className="pt-2 space-y-3 pb-2">
           <Button
             type="submit"
             variant="primary"
@@ -468,16 +491,67 @@ export default function NewMatchPage() {
             {creating ? "Sorteando times..." : `Criar Partida · Sortear ${teamSize * 2} primeiros`}
           </Button>
           {!creating && canCreate && (
-            <p className="text-center text-[#475569] text-xs mt-2">
+            <p className="text-center text-[#475569] text-xs">
               🎲 Os {teamSize * 2} primeiros a chegar serão sorteados. Os demais entram na fila.
             </p>
           )}
           {!canCreate && selectedCount === 0 && !loading && players.length > 0 && (
-            <p className="text-center text-[#64748B] text-xs mt-2">
+            <p className="text-center text-[#64748B] text-xs">
               Selecione pelo menos {minRequired} jogadores para um {teamSize}x{teamSize}
             </p>
           )}
         </div>
+
+        {/* Divider */}
+        {canCreate && (
+          <div className="flex items-center gap-3 py-1">
+            <div className="flex-1 h-px bg-[#334155]/60" />
+            <span className="text-[#475569] text-xs">ou</span>
+            <div className="flex-1 h-px bg-[#334155]/60" />
+          </div>
+        )}
+
+        {/* Manual Draft toggle */}
+        {canCreate && (
+          <div className="pb-8">
+            <button
+              type="button"
+              onClick={() => setShowManualDraft((v) => !v)}
+              className={`w-full flex items-center justify-center gap-2 rounded-2xl py-3.5 border text-sm font-semibold transition-all ${
+                showManualDraft
+                  ? "bg-[#1E293B] border-[#475569] text-[#F1F5F9]"
+                  : "bg-[#1E293B] border-[#334155]/60 text-[#64748B] hover:border-[#475569] hover:text-[#94A3B8]"
+              }`}
+            >
+              <Layout size={16} />
+              Organizar Manualmente
+              {showManualDraft ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+            </button>
+
+            <AnimatePresence>
+              {showManualDraft && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="pt-4 bg-[#1E293B] rounded-2xl border border-[#334155]/60 p-4 mt-2">
+                    <ManualDraftBoard
+                      players={selectedIds
+                        .map((id) => players.find((p) => p.id === id))
+                        .filter(Boolean) as Player[]}
+                      teamSize={teamSize}
+                      matchName={matchName}
+                      onConfirm={handleCreateManual}
+                      onCancel={() => setShowManualDraft(false)}
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
       </form>
     </div>
   );
