@@ -646,80 +646,113 @@ function SubstitutionModal({
 }
 
 // ─── Add Queue Modal ──────────────────────────────────────────────────────────
+// Multi-select with arrival order numbers, just like match creation screen.
 
 function AddQueueModal({
   onClose,
   onAddExisting,
   onCreateNew,
   livePlayersIds,
+  currentQueueLength,
 }: {
   onClose: () => void;
-  onAddExisting: (playerId: string) => Promise<{ error: string | null }>;
+  onAddExisting: (player: { id: string; name: string }) => Promise<{ error: string | null }>;
   onCreateNew: (name: string) => Promise<{ error: string | null }>;
   livePlayersIds: Set<string>;
+  currentQueueLength: number;
 }) {
   const { permanentPlayers, casualPlayers, loading } = usePlayers();
-  const [search, setSearch] = useState("");
+  // Ordered array of selected player ids — index = arrival order
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
   const { showToast } = useToast();
 
   const allPlayers = [...permanentPlayers, ...casualPlayers];
-  const availablePlayers = allPlayers.filter(
-    (p) => !livePlayersIds.has(p.id)
-  );
+  const availablePlayers = allPlayers.filter((p) => !livePlayersIds.has(p.id));
 
-  const filtered = search
+  const filtered = newName
     ? availablePlayers.filter((p) =>
-        p.name.toLowerCase().includes(search.toLowerCase())
+        p.name.toLowerCase().includes(newName.toLowerCase())
       )
     : availablePlayers;
 
   const isExactMatch = allPlayers.some(
-    (p) => p.name.toLowerCase() === search.toLowerCase().trim()
+    (p) => p.name.toLowerCase() === newName.toLowerCase().trim()
   );
 
-  async function handleAddExisting(p: { id: string; name: string }) {
-    setAdding(true);
-    const { error } = await onAddExisting(p.id);
-    setAdding(false);
-    if (error) {
-      showToast(error, "error");
-    } else {
-      showToast(`${p.name} entrou na fila!`, "success");
-      onClose();
-    }
+  const selectedSet = new Set(selectedIds);
+
+  function togglePlayer(id: string) {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return prev.filter((pid) => pid !== id);
+      return [...prev, id];
+    });
   }
 
-  async function handleCreateNew() {
-    const trimmed = search.trim();
-    if (!trimmed) return;
-    
-    // First check if a player with this name already exists in the user's list
-    // but maybe they are already in the match?
-    const existing = allPlayers.find(
-      (p) => p.name.toLowerCase() === trimmed.toLowerCase()
-    );
+  async function handleConfirmAll() {
+    if (adding) return;
 
-    if (existing) {
-      if (livePlayersIds.has(existing.id)) {
-        showToast("Este jogador já está na partida ou na fila.", "error");
+    // If there's a typed new name not in the list, handle it first
+    const trimmed = newName.trim();
+    const typedIsNew = trimmed && !isExactMatch;
+    const typedExisting = trimmed
+      ? allPlayers.find((p) => p.name.toLowerCase() === trimmed.toLowerCase())
+      : null;
+
+    setAdding(true);
+
+    // Add typed new name (create or re-use)
+    if (trimmed && typedIsNew) {
+      const { error } = await onCreateNew(trimmed);
+      if (error) {
+        showToast(error, "error");
+        setAdding(false);
         return;
       }
-      // Re-use existing player
-      handleAddExisting(existing);
-      return;
+    } else if (trimmed && typedExisting && !selectedSet.has(typedExisting.id)) {
+      if (livePlayersIds.has(typedExisting.id)) {
+        showToast("Este jogador já está na partida ou na fila.", "error");
+        setAdding(false);
+        return;
+      }
+      const { error } = await onAddExisting(typedExisting);
+      if (error) {
+        showToast(error, "error");
+        setAdding(false);
+        return;
+      }
     }
 
-    setAdding(true);
-    const { error } = await onCreateNew(trimmed);
+    // Add all selected players in arrival order
+    let anyError = false;
+    for (const pid of selectedIds) {
+      const p = allPlayers.find((pl) => pl.id === pid);
+      if (!p) continue;
+      const { error } = await onAddExisting(p);
+      if (error) {
+        showToast(error, "error");
+        anyError = true;
+        break;
+      }
+    }
+
     setAdding(false);
-    if (error) {
-      showToast(error, "error");
-    } else {
-      showToast(`${trimmed} criado e adicionado à fila!`, "success");
+    if (!anyError) {
+      const total = selectedIds.length + (trimmed ? 1 : 0);
+      if (total > 0) {
+        showToast(
+          total === 1
+            ? `1 jogador adicionado à fila!`
+            : `${total} jogadores adicionados à fila!`,
+          "success"
+        );
+      }
       onClose();
     }
   }
+
+  const canConfirm = selectedIds.length > 0 || (newName.trim().length > 0);
 
   return (
     <motion.div
@@ -736,15 +769,16 @@ function AddQueueModal({
         exit={{ y: "100%" }}
         transition={{ type: "spring", stiffness: 400, damping: 38 }}
         className="w-full max-w-md mx-auto bg-[#1E293B] rounded-t-3xl border-t border-[#334155] overflow-hidden flex flex-col"
-        style={{ paddingBottom: "env(safe-area-inset-bottom)", maxHeight: "85vh" }}
+        style={{ paddingBottom: "env(safe-area-inset-bottom)", maxHeight: "88vh" }}
       >
         <div className="w-10 h-1 bg-[#334155] rounded-full mx-auto mt-4 mb-1 shrink-0" />
 
+        {/* Header */}
         <div className="px-5 py-3 border-b border-[#334155]/60 flex items-center justify-between shrink-0">
           <div>
-            <p className="text-xs text-[#64748B] font-medium">Time de Próxima 🔜</p>
+            <p className="text-xs text-[#64748B] font-medium">Chegaram novos? 🔜</p>
             <h3 className="text-[#F1F5F9] font-bold text-lg font-display">
-              Adicionar Jogador
+              Adicionar à Fila
             </h3>
           </div>
           <button
@@ -755,69 +789,146 @@ function AddQueueModal({
           </button>
         </div>
 
-        <div className="p-4 shrink-0">
+        {/* Arrival info */}
+        <div className="px-5 pt-3 pb-1 shrink-0">
+          <p className="text-[#64748B] text-xs">
+            Toque nos jogadores na <span className="text-[#94A3B8] font-semibold">ordem de chegada</span>. Eles entrarão no final da fila.
+          </p>
+        </div>
+
+        {/* Search / new name */}
+        <div className="px-4 py-2 shrink-0">
           <input
             type="text"
             placeholder="Buscar ou digitar novo nome..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
             className="w-full bg-[#0F172A] border border-[#334155] rounded-xl px-4 py-3 text-[#F1F5F9] placeholder-[#475569] focus:outline-none focus:border-[#1D4ED8] focus:ring-1 focus:ring-[#1D4ED8]"
             autoFocus
           />
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2">
-          {search.trim() && !isExactMatch && (
-            <button
-              disabled={adding}
-              onClick={handleCreateNew}
-              className="w-full flex items-center gap-3 bg-[#1D4ED8]/10 border border-[#1D4ED8]/30 hover:bg-[#1D4ED8]/20 rounded-2xl px-4 py-3 text-left transition-all disabled:opacity-50"
+        {/* Player list */}
+        <div className="flex-1 overflow-y-auto px-4 pb-2 space-y-2">
+          {/* Create new option */}
+          {newName.trim() && !isExactMatch && (
+            <motion.button
+              layout
+              whileTap={{ scale: 0.97 }}
+              onClick={() => {
+                // Will be handled on confirm — just show as selected
+                // For new names we handle on confirm directly
+              }}
+              className="w-full flex items-center gap-3 bg-[#1D4ED8]/10 border border-[#1D4ED8]/30 rounded-2xl px-4 py-3 text-left"
             >
-              <div className="w-10 h-10 rounded-xl bg-[#1D4ED8] flex items-center justify-center text-white font-bold shrink-0">
+              <div className="w-10 h-10 rounded-xl bg-[#1D4ED8] flex items-center justify-center text-white font-bold text-lg shrink-0">
                 +
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-[#3B82F6] font-semibold text-sm">Criar e Adicionar</p>
-                <p className="text-[#F1F5F9] font-bold truncate">"{search.trim()}"</p>
+                <p className="text-[#3B82F6] font-semibold text-sm">Criar e adicionar à fila</p>
+                <p className="text-[#F1F5F9] font-bold truncate">"{newName.trim()}"</p>
               </div>
-            </button>
+            </motion.button>
           )}
 
           {loading ? (
             <div className="text-center py-6 text-[#64748B] text-sm">Carregando...</div>
-          ) : filtered.length === 0 && !search.trim() ? (
+          ) : filtered.length === 0 && !newName.trim() ? (
             <div className="text-center py-6 text-[#64748B] text-sm">
               Todos os seus jogadores já estão na partida.
             </div>
           ) : (
             filtered.map((p) => {
+              const isSelected = selectedSet.has(p.id);
+              const arrivalIndex = selectedIds.indexOf(p.id);
+              // queue position = currentQueueLength + selected index + 1
+              const queuePos = currentQueueLength + arrivalIndex + 1;
               const initials = p.name
                 .split(" ")
                 .slice(0, 2)
                 .map((w) => w[0])
                 .join("")
                 .toUpperCase();
+
               return (
-                <button
+                <motion.button
+                  layout
                   key={p.id}
-                  disabled={adding}
-                  onClick={() => handleAddExisting(p)}
-                  className="w-full flex items-center gap-3 bg-[#0F172A] border border-[#334155] hover:border-[#475569] rounded-2xl px-4 py-3 min-h-[60px] text-left transition-all disabled:opacity-50"
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => togglePlayer(p.id)}
+                  className={`w-full flex items-center gap-3 rounded-2xl px-4 py-3 min-h-[64px] text-left transition-all border ${
+                    isSelected
+                      ? "bg-[#1D4ED8]/20 border-[#1D4ED8]/60"
+                      : "bg-[#0F172A] border-[#334155] hover:border-[#475569]"
+                  }`}
                 >
-                  <div className="w-10 h-10 rounded-xl bg-[#334155] flex items-center justify-center text-[#94A3B8] font-bold text-sm shrink-0">
-                    {initials}
+                  {/* Avatar — arrival number when selected */}
+                  <div
+                    className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 transition-colors ${
+                      isSelected ? "bg-[#1D4ED8] text-white" : "bg-[#334155] text-[#94A3B8]"
+                    }`}
+                  >
+                    {isSelected ? (
+                      <span className="text-base font-black">{queuePos}°</span>
+                    ) : (
+                      initials
+                    )}
                   </div>
+
+                  {/* Name + status */}
                   <div className="flex-1 min-w-0">
-                    <p className="text-[#F1F5F9] font-semibold truncate">{p.name}</p>
-                    <p className="text-[#64748B] text-xs">
-                      {p.type === "permanent" ? "Fixo" : "Avulso"}
+                    <p className={`font-semibold truncate ${isSelected ? "text-[#F1F5F9]" : "text-[#94A3B8]"}`}>
+                      {p.name}
+                    </p>
+                    <p className={`text-xs ${isSelected ? "text-[#93C5FD]" : "text-[#64748B]"}`}>
+                      {isSelected
+                        ? `✓ Chegada nº ${queuePos}`
+                        : p.type === "permanent" ? "Fixo" : "Avulso"}
                     </p>
                   </div>
-                  <ChevronRight size={18} className="text-[#475569]" />
-                </button>
+
+                  {/* Checkbox */}
+                  <div
+                    className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center shrink-0 transition-all ${
+                      isSelected ? "bg-[#1D4ED8] border-[#1D4ED8]" : "border-[#334155]"
+                    }`}
+                  >
+                    {isSelected && <Check size={13} className="text-white" />}
+                  </div>
+                </motion.button>
               );
             })
           )}
+        </div>
+
+        {/* Footer confirm button */}
+        <div className="px-4 pt-2 pb-3 border-t border-[#334155]/60 shrink-0">
+          <motion.button
+            whileTap={{ scale: 0.97 }}
+            disabled={!canConfirm || adding}
+            onClick={handleConfirmAll}
+            className={`w-full flex items-center justify-center gap-2 rounded-2xl py-4 font-bold text-base min-h-[56px] transition-all ${
+              canConfirm && !adding
+                ? "bg-[#1D4ED8] text-white shadow-lg"
+                : "bg-[#1E293B] border border-[#334155] text-[#475569] cursor-not-allowed"
+            }`}
+          >
+            {adding ? (
+              <span className="text-sm">Adicionando...</span>
+            ) : selectedIds.length > 0 ? (
+              <>
+                <Check size={18} />
+                Adicionar {selectedIds.length} jogador{selectedIds.length !== 1 ? "es" : ""} à fila
+              </>
+            ) : newName.trim() ? (
+              <>
+                <Check size={18} />
+                Criar e adicionar "{newName.trim()}"
+              </>
+            ) : (
+              "Selecione jogadores acima"
+            )}
+          </motion.button>
         </div>
       </motion.div>
     </motion.div>
@@ -1424,13 +1535,42 @@ export default function PlayMatchPage({
       
     matchChannelRef.current = matchChannel;
 
-    // Subscribe to match_players changes (substitutions)
+    // Subscribe to match_players changes (substitutions + new queue additions)
     const mpChannel = supabase
       .channel(`match-players-${id}`)
       .on(
         "postgres_changes",
         {
           event: "UPDATE",
+          schema: "public",
+          table: "match_players",
+          filter: `match_id=eq.${id}`,
+        },
+        async () => {
+          const { active, reserves: res } = await getLiveMatchPlayers(id);
+          setLivePlayers(active);
+          setReserves(res);
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "match_players",
+          filter: `match_id=eq.${id}`,
+        },
+        async () => {
+          // New player added to queue — refresh the full list
+          const { active, reserves: res } = await getLiveMatchPlayers(id);
+          setLivePlayers(active);
+          setReserves(res);
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "DELETE",
           schema: "public",
           table: "match_players",
           filter: `match_id=eq.${id}`,
@@ -1620,8 +1760,24 @@ export default function PlayMatchPage({
     router.push(`/match/${newMatchId}/lobby`);
   }
 
-  async function handleAddExistingToQueue(playerId: string) {
-    const res = await addPlayerToQueue(id, playerId);
+  async function handleAddExistingToQueue(player: { id: string; name: string }) {
+    const res = await addPlayerToQueue(id, player.id);
+    if (!res.error) {
+      // Optimistic update — add to end of local reserves list immediately
+      setReserves((prev) => {
+        const maxPos = Math.max(0, ...prev.map((p) => p.queue_position ?? 0));
+        return [
+          ...prev,
+          {
+            match_player_id: `temp-${player.id}`, // will be replaced by realtime refresh
+            player_id: player.id,
+            player_name: player.name,
+            team_id: null,
+            queue_position: maxPos + 1,
+          },
+        ];
+      });
+    }
     return res;
   }
 
@@ -1644,7 +1800,25 @@ export default function PlayMatchPage({
   async function handleCreateNewAndQueue(name: string) {
     const { data: player, error } = await addPlayer({ name, type: "casual" });
     if (error || !player) return { error: error ?? "Erro ao criar jogador" };
-    return await addPlayerToQueue(id, player.id);
+
+    const res = await addPlayerToQueue(id, player.id);
+    if (!res.error) {
+      // Optimistic update — show player in queue immediately
+      setReserves((prev) => {
+        const maxPos = Math.max(0, ...prev.map((p) => p.queue_position ?? 0));
+        return [
+          ...prev,
+          {
+            match_player_id: `temp-${player.id}`,
+            player_id: player.id,
+            player_name: player.name,
+            team_id: null,
+            queue_position: maxPos + 1,
+          },
+        ];
+      });
+    }
+    return res;
   }
 
   const isWaiting = match?.status === "waiting";
@@ -1793,15 +1967,13 @@ export default function PlayMatchPage({
                           {reserves.length}
                         </span>
                       </p>
-                      {/* Creator only button to add player mid-match */}
-                      {isCreator && (
-                        <button
-                          onClick={() => setAddQueueModal({ open: true })}
-                          className="text-[#3B82F6] text-xs font-semibold bg-[#1D4ED8]/10 hover:bg-[#1D4ED8]/20 border border-[#1D4ED8]/30 px-2 py-1 rounded-lg transition-colors"
-                        >
-                          + Adicionar
-                        </button>
-                      )}
+                      {/* Anyone can add players mid-match */}
+                      <button
+                        onClick={() => setAddQueueModal({ open: true })}
+                        className="text-[#3B82F6] text-xs font-semibold bg-[#1D4ED8]/10 hover:bg-[#1D4ED8]/20 border border-[#1D4ED8]/30 px-2 py-1 rounded-lg transition-colors"
+                      >
+                        + Adicionar
+                      </button>
                     </div>
                     
                     {reserves.length > 0 ? (
@@ -1890,6 +2062,7 @@ export default function PlayMatchPage({
               <EventFeed events={events} teams={mainTeams} />
             </>
           )}
+
         </div>
       </div>
 
@@ -1951,6 +2124,22 @@ export default function PlayMatchPage({
               showToast("Nova partida criada! 🚀", "success");
               setTimeout(() => router.push(`/match/${newMatchId}/lobby`), 800);
             }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Add Queue Modal */}
+      <AnimatePresence>
+        {addQueueModal.open && (
+          <AddQueueModal
+            onClose={() => setAddQueueModal({ open: false })}
+            onAddExisting={handleAddExistingToQueue}
+            onCreateNew={handleCreateNewAndQueue}
+            livePlayersIds={new Set([
+              ...livePlayers.map((p) => p.player_id),
+              ...reserves.map((p) => p.player_id),
+            ])}
+            currentQueueLength={reserves.length}
           />
         )}
       </AnimatePresence>

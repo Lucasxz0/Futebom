@@ -195,3 +195,63 @@ export async function createPlayersBulk(
 
   return { created: toCreate.length, skipped, error: null };
 }
+
+/**
+ * Delete multiple players at once (only players belonging to the current user).
+ */
+export async function deletePlayers(
+  ids: string[]
+): Promise<{ error: string | null }> {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { error: "Usuário não autenticado." };
+  if (ids.length === 0) return { error: null };
+
+  const { error } = await supabase
+    .from("players")
+    .delete()
+    .in("id", ids)
+    .eq("user_id", user.id);
+
+  if (error) return { error: error.message };
+  return { error: null };
+}
+
+/**
+ * Reset stats for the given player IDs by deleting their match_events (goals/assists)
+ * and match_players entries. This zeroes out goals, assists, matches played etc.
+ * The match records themselves are preserved.
+ */
+export async function resetPlayerStats(
+  playerIds: string[]
+): Promise<{ error: string | null }> {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { error: "Usuário não autenticado." };
+  if (playerIds.length === 0) return { error: null };
+
+  // Delete goal/assist events for these players
+  const { error: eventsError } = await supabase
+    .from("match_events")
+    .delete()
+    .in("player_id", playerIds)
+    .in("event_type", ["goal", "assist"]);
+
+  if (eventsError) return { error: eventsError.message };
+
+  // Delete match_players entries so matches_played = 0
+  const { error: mpError } = await supabase
+    .from("match_players")
+    .delete()
+    .in("player_id", playerIds);
+
+  if (mpError) return { error: mpError.message };
+
+  return { error: null };
+}

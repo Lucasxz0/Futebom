@@ -15,9 +15,12 @@ import {
   Zap,
   ClipboardList,
   Check,
+  CheckSquare,
+  Square,
+  RotateCcw,
 } from "lucide-react";
 import { usePlayers } from "@/hooks/usePlayers";
-import { Player, PlayerType, createPlayersBulk } from "@/services/playerService";
+import { Player, PlayerType, createPlayersBulk, deletePlayers, resetPlayerStats } from "@/services/playerService";
 import { useToast } from "@/components/ui/Toast";
 import Button from "@/components/ui/Button";
 import SkeletonCard from "@/components/ui/SkeletonCard";
@@ -333,10 +336,16 @@ function PlayerCard({
   player,
   onEdit,
   onDelete,
+  selectionMode,
+  selected,
+  onSelect,
 }: {
   player: Player;
   onEdit: (p: Player) => void;
   onDelete: (p: Player) => void;
+  selectionMode: boolean;
+  selected: boolean;
+  onSelect: (id: string) => void;
 }) {
   const isPermanent = player.type === "permanent";
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -347,6 +356,64 @@ function PlayerCard({
     .map((w) => w[0])
     .join("")
     .toUpperCase();
+
+  if (selectionMode) {
+    return (
+      <motion.div
+        layout
+        initial={{ opacity: 0, x: -12 }}
+        animate={{ opacity: 1, x: 0 }}
+        exit={{ opacity: 0, x: 12, scale: 0.95 }}
+        transition={{ type: "spring", stiffness: 380, damping: 30 }}
+      >
+        <button
+          onClick={() => onSelect(player.id)}
+          className={`w-full flex items-center gap-3 rounded-2xl px-4 py-3 border transition-all ${
+            selected
+              ? "bg-[#EF4444]/10 border-[#EF4444]/50"
+              : "bg-[#1E293B] border-[#334155]/60 hover:border-[#475569]"
+          }`}
+          style={{ minHeight: "72px" }}
+        >
+          {/* Checkbox */}
+          <div
+            className={`w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${
+              selected ? "bg-[#EF4444] border-[#EF4444]" : "border-[#475569]"
+            }`}
+          >
+            {selected && <X size={11} className="text-white" />}
+          </div>
+
+          {/* Avatar */}
+          <div
+            className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 font-bold font-display text-sm ${
+              isPermanent
+                ? "bg-[#1D4ED8]/30 text-[#3B82F6]"
+                : "bg-[#334155] text-[#94A3B8]"
+            }`}
+          >
+            {initials}
+          </div>
+
+          {/* Name + badge */}
+          <div className="flex-1 min-w-0 text-left">
+            <p className="text-[#F1F5F9] font-semibold truncate">{player.name}</p>
+            <span
+              className={`inline-flex items-center gap-1 text-xs mt-0.5 ${
+                isPermanent ? "text-[#3B82F6]" : "text-[#64748B]"
+              }`}
+            >
+              {isPermanent ? (
+                <><ShieldCheck size={11} /> Fixo</>
+              ) : (
+                <><Zap size={11} /> Avulso</>
+              )}
+            </span>
+          </div>
+        </button>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div
@@ -603,19 +670,22 @@ function PlayerModal({
   );
 }
 
-// ─── Delete Confirm Dialog ─────────────────────────────────────────────────────
+// ─── Bulk Action Confirm Dialog ───────────────────────────────────────────────
 
-function DeleteConfirmDialog({
-  player,
+function BulkConfirmDialog({
+  mode,
+  count,
   onConfirm,
   onCancel,
   loading,
 }: {
-  player: Player;
+  mode: "delete" | "reset";
+  count: number;
   onConfirm: () => void;
   onCancel: () => void;
   loading: boolean;
 }) {
+  const isDelete = mode === "delete";
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -632,15 +702,24 @@ function DeleteConfirmDialog({
         transition={{ type: "spring", stiffness: 420, damping: 35 }}
         className="w-full max-w-sm bg-[#1E293B] rounded-3xl p-6 border border-[#334155]"
       >
-        <div className="w-14 h-14 bg-[#EF4444]/15 rounded-2xl flex items-center justify-center mx-auto mb-4">
-          <Trash2 size={28} className="text-[#EF4444]" />
+        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4 ${
+          isDelete ? "bg-[#EF4444]/15" : "bg-[#EAB308]/15"
+        }`}>
+          {isDelete ? (
+            <Trash2 size={28} className="text-[#EF4444]" />
+          ) : (
+            <RotateCcw size={28} className="text-[#EAB308]" />
+          )}
         </div>
         <h3 className="text-[#F1F5F9] text-lg font-bold text-center mb-2">
-          Remover jogador?
+          {isDelete
+            ? `Remover ${count} jogador${count !== 1 ? "es" : ""}?`
+            : `Resetar ranking de ${count} jogador${count !== 1 ? "es" : ""}?`}
         </h3>
         <p className="text-[#64748B] text-sm text-center mb-6">
-          <span className="text-[#94A3B8] font-semibold">{player.name}</span> será
-          removido permanentemente da sua lista.
+          {isDelete
+            ? `Eles serão removidos permanentemente da sua lista.`
+            : `Gols, assistências e partidas serão zerados. Ação irreversível.`}
         </p>
         <div className="flex gap-3">
           <button
@@ -651,12 +730,12 @@ function DeleteConfirmDialog({
             Cancelar
           </button>
           <Button
-            variant="danger"
+            variant={isDelete ? "danger" : "primary"}
             className="flex-1"
             onClick={onConfirm}
             loading={loading}
           >
-            Remover
+            {isDelete ? "Remover" : "Resetar"}
           </Button>
         </div>
       </motion.div>
@@ -700,6 +779,38 @@ export default function PlayersPage() {
   const [deleting, setDeleting] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
 
+  // Selection state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkConfirm, setBulkConfirm] = useState<"delete" | "reset" | null>(null);
+  const [bulkLoading, setBulkLoading] = useState(false);
+
+  const allPlayers = [...permanentPlayers, ...casualPlayers];
+  const allSelected = allPlayers.length > 0 && selectedIds.size === allPlayers.length;
+  const selectedCount = selectedIds.size;
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllPlayers() {
+    setSelectedIds(new Set(allPlayers.map((p) => p.id)));
+  }
+
+  function deselectAll() {
+    setSelectedIds(new Set());
+  }
+
+  function exitSelectionMode() {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }
+
   function openAdd(defaultType?: PlayerType) {
     setModal({ open: true, mode: "add", player: defaultType ? { type: defaultType } as Player : undefined });
   }
@@ -740,6 +851,41 @@ export default function PlayersPage() {
     setDeleteTarget(null);
   }
 
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedIds);
+    setBulkLoading(true);
+    const { error } = await deletePlayers(ids);
+    setBulkLoading(false);
+    if (error) {
+      showToast(error, "error");
+    } else {
+      showToast(
+        `${ids.length} jogador${ids.length !== 1 ? "es" : ""} removido${ids.length !== 1 ? "s" : ""}.`,
+        "info"
+      );
+      refresh();
+      exitSelectionMode();
+      setBulkConfirm(null);
+    }
+  }
+
+  async function handleBulkReset() {
+    const ids = Array.from(selectedIds);
+    setBulkLoading(true);
+    const { error } = await resetPlayerStats(ids);
+    setBulkLoading(false);
+    if (error) {
+      showToast(error, "error");
+    } else {
+      showToast(
+        `Ranking de ${ids.length} jogador${ids.length !== 1 ? "es" : ""} resetado.`,
+        "success"
+      );
+      exitSelectionMode();
+      setBulkConfirm(null);
+    }
+  }
+
   function handleImported(created: number, skipped: number) {
     setShowBulkImport(false);
     refresh();
@@ -762,42 +908,104 @@ export default function PlayersPage() {
           className="pt-4 pb-5"
         >
           <div className="flex items-center justify-between gap-2">
+            {/* Left: title or selection count */}
             <div className="flex items-center gap-2">
-              <Users size={24} className="text-[#3B82F6]" />
-              <h1 className="text-[#F1F5F9] text-2xl font-bold font-display">
-                Jogadores
-              </h1>
-              {!loading && (
-                <span className="bg-[#1D4ED8]/20 border border-[#1D4ED8]/40 text-[#3B82F6] text-xs px-2 py-0.5 rounded-full font-mono ml-1">
-                  {totalPlayers}
-                </span>
+              {selectionMode ? (
+                <>
+                  <button
+                    onClick={exitSelectionMode}
+                    className="text-[#64748B] hover:text-[#F1F5F9] transition-colors p-1 -ml-1"
+                  >
+                    <X size={20} />
+                  </button>
+                  <span className="text-[#F1F5F9] font-bold font-display">
+                    {selectedCount > 0
+                      ? `${selectedCount} selecionado${selectedCount !== 1 ? "s" : ""}`
+                      : "Selecionar"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Users size={24} className="text-[#3B82F6]" />
+                  <h1 className="text-[#F1F5F9] text-2xl font-bold font-display">
+                    Jogadores
+                  </h1>
+                  {!loading && (
+                    <span className="bg-[#1D4ED8]/20 border border-[#1D4ED8]/40 text-[#3B82F6] text-xs px-2 py-0.5 rounded-full font-mono ml-1">
+                      {totalPlayers}
+                    </span>
+                  )}
+                </>
               )}
             </div>
 
-            {/* Action buttons */}
+                      {/* Action buttons */}
             <div className="flex gap-2">
-              {/* Bulk import */}
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={() => setShowBulkImport(true)}
-                id="bulk-import-btn"
-                className="flex items-center gap-1.5 bg-[#1E293B] hover:bg-[#334155] border border-[#334155] text-[#94A3B8] px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors min-h-[44px]"
-                title="Importar lista"
-              >
-                <ClipboardList size={17} />
-                <span className="hidden sm:inline">Lista</span>
-              </motion.button>
+              {selectionMode ? (
+                // Selection mode: show select all + bulk action buttons
+                <>
+                  <button
+                    onClick={allSelected ? deselectAll : selectAllPlayers}
+                    className="flex items-center gap-1.5 text-[#3B82F6] text-xs font-semibold min-h-[36px] px-2"
+                  >
+                    {allSelected ? <Square size={14} /> : <CheckSquare size={14} />}
+                    {allSelected ? "Nenhum" : "Todos"}
+                  </button>
+                  {selectedCount > 0 && (
+                    <>
+                      <button
+                        onClick={() => setBulkConfirm("reset")}
+                        className="flex items-center gap-1.5 bg-[#EAB308]/10 border border-[#EAB308]/30 text-[#EAB308] text-xs font-semibold px-2.5 py-1.5 rounded-lg min-h-[36px] hover:bg-[#EAB308]/20 transition-colors"
+                      >
+                        <RotateCcw size={12} />
+                        Reset
+                      </button>
+                      <button
+                        onClick={() => setBulkConfirm("delete")}
+                        className="flex items-center gap-1.5 bg-[#EF4444]/10 border border-[#EF4444]/30 text-[#EF4444] text-xs font-semibold px-2.5 py-1.5 rounded-lg min-h-[36px] hover:bg-[#EF4444]/20 transition-colors"
+                      >
+                        <Trash2 size={12} />
+                        Apagar ({selectedCount})
+                      </button>
+                    </>
+                  )}
+                </>
+              ) : (
+                // Normal mode: import + add
+                <>
+                  {/* Trigger select mode */}
+                  {totalPlayers > 0 && (
+                    <button
+                      onClick={() => setSelectionMode(true)}
+                      className="text-[#64748B] hover:text-[#94A3B8] text-xs font-semibold min-h-[36px] px-2 transition-colors"
+                    >
+                      Selecionar
+                    </button>
+                  )}
+                  {/* Bulk import */}
+                  <motion.button
+                    whileTap={{ scale: 0.92 }}
+                    onClick={() => setShowBulkImport(true)}
+                    id="bulk-import-btn"
+                    className="flex items-center gap-1.5 bg-[#1E293B] hover:bg-[#334155] border border-[#334155] text-[#94A3B8] px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors min-h-[44px]"
+                    title="Importar lista"
+                  >
+                    <ClipboardList size={17} />
+                    <span className="hidden sm:inline">Lista</span>
+                  </motion.button>
 
-              {/* Add single player */}
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={() => openAdd()}
-                id="add-player-btn"
-                className="flex items-center gap-2 bg-[#1D4ED8] hover:bg-[#1E40AF] text-white px-4 py-2.5 rounded-xl font-semibold text-sm transition-colors min-h-[44px] shadow-lg"
-              >
-                <Plus size={18} />
-                Adicionar
-              </motion.button>
+                  {/* Add single player */}
+                  <motion.button
+                    whileTap={{ scale: 0.92 }}
+                    onClick={() => openAdd()}
+                    id="add-player-btn"
+                    className="flex items-center gap-2 bg-[#1D4ED8] hover:bg-[#1E40AF] text-white px-4 py-2.5 rounded-xl font-semibold text-sm transition-colors min-h-[44px] shadow-lg"
+                  >
+                    <Plus size={18} />
+                    Adicionar
+                  </motion.button>
+                </>
+              )}
             </div>
           </div>
           <p className="text-[#64748B] text-sm mt-1">
@@ -842,7 +1050,7 @@ export default function PlayersPage() {
                 count={permanentPlayers.length}
               />
               {permanentPlayers.length === 0 ? (
-                <EmptyState type="permanent" onAdd={() => openAdd("permanent")} />
+                !selectionMode && <EmptyState type="permanent" onAdd={() => openAdd("permanent")} />
               ) : (
                 <div className="space-y-2">
                   <AnimatePresence mode="popLayout">
@@ -852,6 +1060,9 @@ export default function PlayersPage() {
                         player={player}
                         onEdit={openEdit}
                         onDelete={setDeleteTarget}
+                        selectionMode={selectionMode}
+                        selected={selectedIds.has(player.id)}
+                        onSelect={toggleSelect}
                       />
                     ))}
                   </AnimatePresence>
@@ -867,7 +1078,7 @@ export default function PlayersPage() {
                 count={casualPlayers.length}
               />
               {casualPlayers.length === 0 ? (
-                <EmptyState type="casual" onAdd={() => openAdd("casual")} />
+                !selectionMode && <EmptyState type="casual" onAdd={() => openAdd("casual")} />
               ) : (
                 <div className="space-y-2">
                   <AnimatePresence mode="popLayout">
@@ -877,6 +1088,9 @@ export default function PlayersPage() {
                         player={player}
                         onEdit={openEdit}
                         onDelete={setDeleteTarget}
+                        selectionMode={selectionMode}
+                        selected={selectedIds.has(player.id)}
+                        onSelect={toggleSelect}
                       />
                     ))}
                   </AnimatePresence>
@@ -936,14 +1150,28 @@ export default function PlayersPage() {
         )}
       </AnimatePresence>
 
-      {/* Delete Confirm */}
+      {/* Single Delete Confirm */}
       <AnimatePresence>
         {deleteTarget && (
-          <DeleteConfirmDialog
-            player={deleteTarget}
+          <BulkConfirmDialog
+            mode="delete"
+            count={1}
             onConfirm={handleDelete}
             onCancel={() => setDeleteTarget(null)}
             loading={deleting}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Bulk Action Confirm */}
+      <AnimatePresence>
+        {bulkConfirm && (
+          <BulkConfirmDialog
+            mode={bulkConfirm}
+            count={selectedCount}
+            onConfirm={bulkConfirm === "delete" ? handleBulkDelete : handleBulkReset}
+            onCancel={() => setBulkConfirm(null)}
+            loading={bulkLoading}
           />
         )}
       </AnimatePresence>

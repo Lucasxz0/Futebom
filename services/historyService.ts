@@ -200,3 +200,25 @@ export async function getMatchDetail(matchId: string): Promise<{
     error: null,
   };
 }
+
+/**
+ * Delete multiple matches by ID (only matches created by the authenticated user).
+ * Deletes in cascade: teams, match_players, match_events.
+ */
+export async function deleteMatches(
+  matchIds: string[]
+): Promise<{ error: string | null }> {
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: "Não autenticado." };
+  if (matchIds.length === 0) return { error: null };
+
+  const { error } = await supabase
+    .from("matches")
+    .delete()
+    .in("id", matchIds)
+    .eq("creator_id", user.id);
+
+  if (error) return { error: error.message };
+  return { error: null };
+}
