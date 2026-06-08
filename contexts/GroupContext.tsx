@@ -83,15 +83,10 @@ export function GroupProvider({ children }: { children: ReactNode }) {
         if (found) {
           setActiveGroup(found);
         } else {
-          // Saved group no longer accessible — try to fetch it directly
-          const { data: fetched } = await getGroupById(savedId);
-          if (fetched) {
-            setActiveGroup(fetched);
-          } else {
-            clearActiveGroupId();
-            setActiveGroup((groups ?? [])[0] ?? null);
-            if (groups?.[0]) setActiveGroupId(groups[0].id);
-          }
+          // User is not a member of the saved group anymore (or never was)
+          clearActiveGroupId();
+          setActiveGroup((groups ?? [])[0] ?? null);
+          if (groups?.[0]) setActiveGroupId(groups[0].id);
         }
       } else if (groups?.length) {
         setActiveGroup(groups[0]);

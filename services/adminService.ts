@@ -80,9 +80,16 @@ export async function autoRegisterSuperAdmin(): Promise<void> {
   if (existing) return; // Already admin
 
   // Register as admin
-  await supabase
+  console.log("⚙️ Attempting to register super admin:", user.email, "UID:", user.id);
+  const { error } = await supabase
     .from("app_admins")
     .insert({ user_id: user.id, granted_by: user.id });
+  
+  if (error) {
+    console.error("❌ autoRegisterSuperAdmin failed to insert:", error.message, error.code);
+  } else {
+    console.log("✅ autoRegisterSuperAdmin successfully registered admin!");
+  }
 }
 
 // ─── Group CRUD (admin-only) ──────────────────────────────────────────────────
@@ -118,6 +125,16 @@ export async function createGroup(params: {
     .single();
 
   if (error) return { data: null, error: error.message };
+
+  // Add the creator as an admin member of the newly created group
+  await supabase
+    .from("group_members")
+    .insert({
+      group_id: data.id,
+      user_id: user.id,
+      role: "admin",
+    });
+
   return { data: data as AdminGroup, error: null };
 }
 
