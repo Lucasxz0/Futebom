@@ -64,7 +64,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const liveMatchId = useLiveMatch();
-  const { activeGroup, isAdmin } = useGroup();
+  const { activeGroup, myGroups, isAdmin, isLoading } = useGroup();
+
+  // Redirect to group selection if user has no active group
+  useEffect(() => {
+    if (isLoading) return;
+    if (pathname === "/groups" || pathname === "/admin") return;
+    if (!activeGroup) {
+      // Admin with no groups → send to admin panel to create one
+      if (isAdmin && myGroups.length === 0) {
+        router.replace("/admin");
+      } else {
+        router.replace("/groups");
+      }
+    }
+  }, [isLoading, activeGroup, isAdmin, myGroups, pathname, router]);
 
   return (
     <div className="flex flex-col min-h-screen min-h-[100dvh] bg-[#0F172A]">
