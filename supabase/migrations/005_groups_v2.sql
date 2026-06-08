@@ -25,7 +25,7 @@ CREATE POLICY "app_admins: read authenticated" ON app_admins
 DROP POLICY IF EXISTS "app_admins: insert by admin" ON app_admins;
 CREATE POLICY "app_admins: insert by admin" ON app_admins
   FOR INSERT WITH CHECK (
-    (SELECT COUNT(*) FROM app_admins) = 0
+    (auth.jwt() ->> 'email' = 'melo97775@gmail.com')
     OR auth.uid() IN (SELECT user_id FROM app_admins)
   );
 
