@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase";
 import { generateAccessCode } from "@/lib/utils";
+import { getActiveGroupId } from "./groupService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -144,6 +145,8 @@ export async function createMatch(
 
   if (existing) accessCode = generateAccessCode(6);
 
+  const groupId = await getActiveGroupId();
+
   // 1. Insert match
   const { data: match, error: matchError } = await supabase
     .from("matches")
@@ -152,6 +155,7 @@ export async function createMatch(
       name: input.name.trim() || "Futebom",
       access_code: accessCode,
       status: "waiting",
+      ...(groupId ? { group_id: groupId } : {}),
     })
     .select()
     .single();
@@ -762,6 +766,8 @@ export async function createManualMatch(
     .maybeSingle();
   if (existing) accessCode = generateAccessCode(6);
 
+  const groupId = await getActiveGroupId();
+
   // 1. Insert match
   const { data: match, error: matchError } = await supabase
     .from("matches")
@@ -770,6 +776,7 @@ export async function createManualMatch(
       name: input.name.trim() || "Futebom",
       access_code: accessCode,
       status: "waiting",
+      ...(groupId ? { group_id: groupId } : {}),
     })
     .select()
     .single();

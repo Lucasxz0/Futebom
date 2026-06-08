@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useGroup } from "@/contexts/GroupContext";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
@@ -14,10 +15,101 @@ import {
   Swords,
   ChevronRight,
   Users,
+  ArrowLeftRight,
+  Settings,
 } from "lucide-react";
 import Button from "@/components/ui/Button";
 import SkeletonCard from "@/components/ui/SkeletonCard";
 import { getPersonalStats, PersonalStats } from "@/services/statsService";
+
+// ─── Group Section ────────────────────────────────────────────────────────────
+
+function GroupSection() {
+  const { activeGroup, myGroups, isAdmin, isLoading, handleLeaveGroup } = useGroup();
+  const router = useRouter();
+
+  if (isLoading) {
+    return <SkeletonCard height="110px" />;
+  }
+
+  return (
+    <div className="rounded-2xl border border-[#334155]/60 overflow-hidden bg-[#1E293B]">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[#334155]/60">
+        <div className="flex items-center gap-2">
+          <Users size={15} className="text-[#3B82F6]" />
+          <span className="text-[#94A3B8] text-xs font-semibold uppercase tracking-wide">
+            Grupo ativo
+          </span>
+        </div>
+        {isAdmin && (
+          <button
+            onClick={() => router.push("/admin")}
+            className="flex items-center gap-1 text-[#F59E0B] text-xs font-semibold hover:text-[#FCD34D] transition-colors"
+          >
+            <Settings size={12} />
+            Admin
+          </button>
+        )}
+      </div>
+
+      <div className="px-4 py-4 space-y-3">
+        {activeGroup ? (
+          <>
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">{activeGroup.emoji ?? "⚽"}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-[#F1F5F9] font-bold leading-tight truncate">
+                  {activeGroup.name}
+                </p>
+                <p className="text-[#64748B] text-xs">
+                  {activeGroup.member_count}{" "}
+                  {activeGroup.member_count === 1 ? "membro" : "membros"}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => router.push("/groups")}
+                className="flex-1 flex items-center justify-center gap-2 bg-[#1D4ED8]/15 border border-[#1D4ED8]/30 text-[#3B82F6] rounded-xl py-2.5 text-sm font-bold hover:bg-[#1D4ED8]/25 transition-colors min-h-[44px]"
+              >
+                <ArrowLeftRight size={14} />
+                Trocar grupo
+              </button>
+
+              {myGroups.length > 1 && (
+                <button
+                  onClick={async () => {
+                    if (confirm(`Sair do grupo "${activeGroup.name}"?`)) {
+                      await handleLeaveGroup(activeGroup.id);
+                    }
+                  }}
+                  className="flex items-center justify-center border border-[#334155] text-[#64748B] rounded-xl px-3 py-2.5 text-xs font-semibold hover:border-[#EF4444]/40 hover:text-[#EF4444] transition-colors min-h-[44px]"
+                >
+                  Sair
+                </button>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-[#64748B] text-sm">
+              Você não está em nenhum grupo. Entre em um grupo para ver o histórico compartilhado.
+            </p>
+            <button
+              onClick={() => router.push("/groups")}
+              className="w-full flex items-center justify-center gap-2 bg-[#1D4ED8] text-white rounded-xl py-3 text-sm font-bold hover:bg-[#1E40AF] transition-colors min-h-[48px]"
+            >
+              Ver grupos disponíveis
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
 
@@ -236,6 +328,9 @@ export default function ProfilePage() {
             <p className="text-[#64748B] text-sm">Nenhuma partida ainda</p>
           </div>
         )}
+
+        {/* Group section */}
+        <GroupSection />
 
         {/* Quick actions */}
         <div className="rounded-2xl overflow-hidden border border-[#334155]/60">

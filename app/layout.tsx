@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Rajdhani, Roboto } from "next/font/google";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { GroupProvider } from "@/contexts/GroupContext";
 import { ToastProvider } from "@/components/ui/Toast";
 import "./globals.css";
 
@@ -48,7 +49,9 @@ export default function RootLayout({
     <html lang="pt-BR" className={`${rajdhani.variable} ${roboto.variable}`}>
       <body className="font-body bg-background text-text-primary antialiased">
         <AuthProvider>
-          <ToastProvider>{children}</ToastProvider>
+          <GroupProvider>
+            <ToastProvider>{children}</ToastProvider>
+          </GroupProvider>
         </AuthProvider>
       </body>
     </html>

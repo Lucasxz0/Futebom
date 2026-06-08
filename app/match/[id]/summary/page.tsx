@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { getMatchDetail, MatchDetail } from "@/services/historyService";
 import SkeletonCard from "@/components/ui/SkeletonCard";
+import VoteSection from "@/components/match/VoteSection";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -367,6 +368,16 @@ export default function MatchSummaryPage({
             <FinalScoreCard match={match} />
             <RosterSection match={match} />
             <EventsSection match={match} />
+            {/* Voting — only for finished matches with players */}
+            {match.status === "finished" && match.players.length > 0 && (
+              <VoteSection
+                matchId={match.id}
+                players={match.players.map((p) => ({
+                  player_id: p.player_id,
+                  player_name: p.player_name,
+                }))}
+              />
+            )}
           </>
         )}
       </div>

@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase";
+import { getActiveGroupId } from "./groupService";
 
 export type PlayerType = "permanent" | "casual";
 
@@ -36,13 +37,21 @@ export async function getPlayers(): Promise<{ data: Player[]; error: string | nu
 
   if (!user) return { data: [], error: "Usuário não autenticado." };
 
-  const { data, error } = await supabase
+  const groupId = await getActiveGroupId();
+
+  let query = supabase
     .from("players")
     .select("*")
-    .eq("user_id", user.id)
-    .order("type", { ascending: true }) // permanent < casual alphabetically
+    .order("type", { ascending: true })
     .order("name", { ascending: true });
 
+  if (groupId) {
+    query = query.eq("group_id", groupId);
+  } else {
+    query = query.eq("user_id", user.id);
+  }
+
+  const { data, error } = await query;
   if (error) return { data: [], error: error.message };
   return { data: (data as Player[]) ?? [], error: null };
 }
@@ -63,13 +72,22 @@ export async function createPlayer(
   const trimmedName = input.name.trim();
   if (!trimmedName) return { data: null, error: "Nome não pode estar vazio." };
 
-  // Check for duplicate (case-insensitive)
-  const { data: existing } = await supabase
+  const groupId = await getActiveGroupId();
+
+  // Check for duplicate (case-insensitive) within group or user
+  let dupQuery = supabase
     .from("players")
     .select("id")
-    .eq("user_id", user.id)
     .ilike("name", trimmedName)
     .maybeSingle();
+
+  if (groupId) {
+    dupQuery = supabase.from("players").select("id").eq("group_id", groupId).ilike("name", trimmedName).maybeSingle();
+  } else {
+    dupQuery = supabase.from("players").select("id").eq("user_id", user.id).ilike("name", trimmedName).maybeSingle();
+  }
+
+  const { data: existing } = await dupQuery;
 
   if (existing) {
     return { data: null, error: `Já existe um jogador chamado "${trimmedName}".` };
@@ -77,7 +95,7 @@ export async function createPlayer(
 
   const { data, error } = await supabase
     .from("players")
-    .insert({ name: trimmedName, type: input.type, user_id: user.id })
+    .insert({ name: trimmedName, type: input.type, user_id: user.id, group_id: groupId ?? undefined })
     .select()
     .single();
 
@@ -173,11 +191,17 @@ export async function createPlayersBulk(
   const trimmed = names.map((n) => n.trim()).filter((n) => n.length >= 2);
   if (trimmed.length === 0) return { created: 0, skipped: 0, error: null };
 
-  // Fetch existing player names for this user (to check duplicates)
-  const { data: existing } = await supabase
-    .from("players")
-    .select("name")
-    .eq("user_id", user.id);
+  const groupId = await getActiveGroupId();
+
+  // Fetch existing player names (for duplicate check)
+  let existingQuery = supabase.from("players").select("name");
+  if (groupId) {
+    existingQuery = existingQuery.eq("group_id", groupId);
+  } else {
+    existingQuery = existingQuery.eq("user_id", user.id);
+  }
+
+  const { data: existing } = await existingQuery;
 
   const existingLower = new Set(
     (existing ?? []).map((p) => p.name.toLowerCase())
@@ -188,7 +212,12 @@ export async function createPlayersBulk(
 
   if (toCreate.length === 0) return { created: 0, skipped, error: null };
 
-  const rows = toCreate.map((name) => ({ name, type, user_id: user.id }));
+  const rows = toCreate.map((name) => ({
+    name,
+    type,
+    user_id: user.id,
+    ...(groupId ? { group_id: groupId } : {}),
+  }));
   const { error } = await supabase.from("players").insert(rows);
 
   if (error) return { created: 0, skipped, error: error.message };

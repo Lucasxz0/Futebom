@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase";
+import { getActiveGroupId } from "./groupService";
 import { Match, Team, MatchEvent } from "./matchService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -37,12 +38,22 @@ export async function getRecentMatches(limit = 5): Promise<{
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { data: [], error: "Não autenticado." };
 
-  const { data: matches, error } = await supabase
+  const groupId = await getActiveGroupId();
+
+  let query = supabase
     .from("matches")
     .select("id, name, status, started_at, finished_at, created_at")
-    .eq("creator_id", user.id)
     .order("created_at", { ascending: false })
     .limit(limit);
+
+  // Se o usuário tem grupo, mostra partidas do grupo; senão, mostra as suas
+  if (groupId) {
+    query = query.eq("group_id", groupId);
+  } else {
+    query = query.eq("creator_id", user.id);
+  }
+
+  const { data: matches, error } = await query;
 
   if (error) return { data: [], error: error.message };
   if (!matches || matches.length === 0) return { data: [], error: null };
@@ -89,12 +100,21 @@ export async function getMatchHistory(): Promise<{
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { data: [], error: "Não autenticado." };
 
-  const { data: matches, error } = await supabase
+  const groupId = await getActiveGroupId();
+
+  let query = supabase
     .from("matches")
     .select("id, name, status, started_at, finished_at, created_at")
-    .eq("creator_id", user.id)
     .eq("status", "finished")
     .order("finished_at", { ascending: false });
+
+  if (groupId) {
+    query = query.eq("group_id", groupId);
+  } else {
+    query = query.eq("creator_id", user.id);
+  }
+
+  const { data: matches, error } = await query;
 
   if (error) return { data: [], error: error.message };
   if (!matches || matches.length === 0) return { data: [], error: null };

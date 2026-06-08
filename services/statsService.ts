@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase";
+import { getActiveGroupId } from "./groupService";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,12 +37,21 @@ export async function getPlayerRanking(): Promise<{
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { data: [], error: "Não autenticado." };
 
-  // 1. Get all finished matches by this user
-  const { data: matches, error: matchError } = await supabase
+  const groupId = await getActiveGroupId();
+
+  // 1. Get all finished matches (by group or by creator)
+  let matchQuery = supabase
     .from("matches")
     .select("id")
-    .eq("creator_id", user.id)
     .eq("status", "finished");
+
+  if (groupId) {
+    matchQuery = matchQuery.eq("group_id", groupId);
+  } else {
+    matchQuery = matchQuery.eq("creator_id", user.id);
+  }
+
+  const { data: matches, error: matchError } = await matchQuery;
 
   if (matchError || !matches || matches.length === 0) {
     return { data: [], error: matchError?.message ?? null };
@@ -155,12 +165,21 @@ export async function getPersonalStats(): Promise<{
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { data: null, error: "Não autenticado." };
 
-  // Get all finished matches by this user (as creator)
-  const { data: createdMatches } = await supabase
+  const groupId = await getActiveGroupId();
+
+  // Get all finished matches (by group or by creator)
+  let matchQuery = supabase
     .from("matches")
     .select("id")
-    .eq("creator_id", user.id)
     .eq("status", "finished");
+
+  if (groupId) {
+    matchQuery = matchQuery.eq("group_id", groupId);
+  } else {
+    matchQuery = matchQuery.eq("creator_id", user.id);
+  }
+
+  const { data: createdMatches } = await matchQuery;
 
   const matchIds = (createdMatches ?? []).map((m) => m.id);
 
