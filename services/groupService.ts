@@ -12,6 +12,7 @@ export interface Group {
   member_count: number;
   created_by: string;
   created_at: string;
+  user_role?: "admin" | "member";
 }
 
 export interface GroupMember {
@@ -78,7 +79,7 @@ export async function getMyGroups(): Promise<{
 
   const { data: memberships, error: memberError } = await supabase
     .from("group_members")
-    .select("group_id")
+    .select("group_id, role")
     .eq("user_id", user.id);
 
   if (memberError) return { data: [], error: memberError.message };
@@ -93,7 +94,13 @@ export async function getMyGroups(): Promise<{
     .order("name", { ascending: true });
 
   if (error) return { data: [], error: error.message };
-  return { data: (data ?? []) as Group[], error: null };
+
+  const mappedData = (data ?? []).map((g: any) => {
+    const mem = memberships.find((m) => m.group_id === g.id);
+    return { ...g, user_role: mem?.role ?? "member" };
+  });
+
+  return { data: mappedData as Group[], error: null };
 }
 
 /**

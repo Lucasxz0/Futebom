@@ -32,6 +32,8 @@ interface GroupContextValue {
   myGroups: Group[];
   /** Whether the current user is an app admin */
   isAdmin: boolean;
+  /** Whether the current user is an admin of the active group */
+  isGroupAdmin: boolean;
   isLoading: boolean;
   error: string | null;
   /** Refresh group data */
@@ -59,6 +61,8 @@ export function GroupProvider({ children }: { children: ReactNode }) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const isGroupAdmin = activeGroup?.user_role === "admin";
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
@@ -172,6 +176,7 @@ export function GroupProvider({ children }: { children: ReactNode }) {
         groupId: activeGroup?.id ?? null,
         myGroups,
         isAdmin,
+        isGroupAdmin,
         isLoading,
         error,
         refresh,

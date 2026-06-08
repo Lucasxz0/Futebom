@@ -25,7 +25,7 @@ import { getPersonalStats, PersonalStats } from "@/services/statsService";
 // ─── Group Section ────────────────────────────────────────────────────────────
 
 function GroupSection() {
-  const { activeGroup, myGroups, isAdmin, isLoading, handleLeaveGroup } = useGroup();
+  const { activeGroup, myGroups, isAdmin, isGroupAdmin, isLoading, handleLeaveGroup } = useGroup();
   const router = useRouter();
 
   if (isLoading) {
@@ -68,6 +68,16 @@ function GroupSection() {
                 </p>
               </div>
             </div>
+
+            {isGroupAdmin && (
+              <button
+                onClick={() => router.push("/group/settings")}
+                className="w-full flex items-center justify-center gap-2 bg-[#334155]/40 border border-[#334155] text-[#94A3B8] rounded-xl py-2.5 text-sm font-bold hover:bg-[#334155]/60 hover:text-[#F1F5F9] transition-colors min-h-[44px]"
+              >
+                <Settings size={14} />
+                Personalizar Grupo
+              </button>
+            )}
 
             <div className="flex gap-2">
               <button
