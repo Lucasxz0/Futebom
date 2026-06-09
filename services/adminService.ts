@@ -54,42 +54,15 @@ export async function checkIsAdmin(): Promise<boolean> {
  * Auto-register user as admin if their email is in NEXT_PUBLIC_SUPER_ADMIN_EMAILS.
  * Should be called on login.
  */
+/**
+ * @deprecated Admin registration is done directly via SQL in the Supabase database.
+ * This function is intentionally disabled to prevent unauthorized self-promotion.
+ * To add an admin, run the SQL migration: supabase/migrations/set_admin_and_lock_policies.sql
+ */
 export async function autoRegisterSuperAdmin(): Promise<void> {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user?.email) return;
-
-  const superAdminEmails = (
-    process.env.NEXT_PUBLIC_SUPER_ADMIN_EMAILS ?? ""
-  )
-    .split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-
-  if (!superAdminEmails.includes(user.email.toLowerCase())) return;
-
-  // Check if already registered
-  const { data: existing } = await supabase
-    .from("app_admins")
-    .select("user_id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (existing) return; // Already admin
-
-  // Register as admin
-  console.log("⚙️ Attempting to register super admin:", user.email, "UID:", user.id);
-  const { error } = await supabase
-    .from("app_admins")
-    .insert({ user_id: user.id, granted_by: user.id });
-  
-  if (error) {
-    console.error("❌ autoRegisterSuperAdmin failed to insert:", error.message, error.code);
-  } else {
-    console.log("✅ autoRegisterSuperAdmin successfully registered admin!");
-  }
+  // Intentionally a no-op.
+  // Admin access is granted manually via SQL in the Supabase dashboard.
+  return;
 }
 
 // ─── Group CRUD (admin-only) ──────────────────────────────────────────────────
