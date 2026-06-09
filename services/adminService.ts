@@ -32,22 +32,40 @@ export interface GroupMemberDetail {
 // ─── Admin check ──────────────────────────────────────────────────────────────
 
 /**
+ * Hardcoded list of super admin UUIDs.
+ * These users are ALWAYS treated as admin regardless of the database state.
+ * This guarantees admin access even if the app_admins table is empty or missing.
+ */
+const HARDCODED_SUPER_ADMINS: string[] = [
+  "c73ee724-1ffe-45bf-93c8-5162387ba5ab", // melo97775@gmail.com
+];
+
+/**
  * Check if the current user is an app admin.
+ * First checks the hardcoded list (always works), then falls back to the DB.
  */
 export async function checkIsAdmin(): Promise<boolean> {
   const supabase = createClient();
   const {
     data: { user },
+    error: authError,
   } = await supabase.auth.getUser();
-  if (!user) return false;
+  if (authError || !user) return false;
 
-  const { data } = await supabase
-    .from("app_admins")
-    .select("user_id")
-    .eq("user_id", user.id)
-    .maybeSingle();
+  // Hardcoded check — guaranteed to work regardless of DB state
+  if (HARDCODED_SUPER_ADMINS.includes(user.id)) return true;
 
-  return !!data;
+  // DB check — for dynamically added admins
+  try {
+    const { data } = await supabase
+      .from("app_admins")
+      .select("user_id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    return !!data;
+  } catch {
+    return false;
+  }
 }
 
 /**
