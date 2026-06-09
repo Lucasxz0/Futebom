@@ -34,42 +34,80 @@ export async function uploadMedia(
   onProgress?: (pct: number) => void
 ): Promise<{ data: MediaPost | null; error: string | null }> {
   const supabase = createClient();
+
+  // 1. Check authentication
   const {
     data: { user },
+    error: authError,
   } = await supabase.auth.getUser();
-  if (!user) return { data: null, error: "Não autenticado." };
+  if (authError || !user) return { data: null, error: "Não autenticado. Faça login e tente novamente." };
 
-  const groupId = await getActiveGroupId();
-  if (!groupId) return { data: null, error: "Você precisa estar em um grupo para postar." };
+  // 2. Check active group
+  const groupId = getActiveGroupId();
+  if (!groupId) return { data: null, error: "Você precisa estar em um grupo para postar. Selecione um grupo primeiro." };
+
+  // 3. Verify user is still a member of that group
+  const { data: membership } = await supabase
+    .from("group_members")
+    .select("group_id")
+    .eq("group_id", groupId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (!membership) {
+    return {
+      data: null,
+      error: "Você não é membro deste grupo. Peça para entrar novamente.",
+    };
+  }
 
   const { file, caption, matchId } = input;
 
-  // Determine media type
+  // 4. Validate file
   const isVideo = file.type.startsWith("video/");
   const mediaType: "image" | "video" = isVideo ? "video" : "image";
+  const maxSize = isVideo ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
+  if (file.size > maxSize) {
+    return {
+      data: null,
+      error: isVideo
+        ? "Vídeo muito grande. O limite é 50MB."
+        : "Imagem muito grande. O limite é 10MB.",
+    };
+  }
 
   // Build storage path: {userId}/{timestamp}-{randomSuffix}.{ext}
-  const ext = file.name.split(".").pop() ?? (isVideo ? "mp4" : "jpg");
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? (isVideo ? "mp4" : "jpg");
   const storagePath = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
 
   onProgress?.(10);
 
-  // Upload to storage
+  // 5. Upload to storage
   const { error: uploadError } = await supabase.storage
     .from(BUCKET)
     .upload(storagePath, file, {
       cacheControl: "3600",
       upsert: false,
+      contentType: file.type,
     });
 
-  if (uploadError) return { data: null, error: uploadError.message };
+  if (uploadError) {
+    console.error("[mediaService] Storage upload error:", uploadError);
+    if (uploadError.message.includes("Bucket not found")) {
+      return { data: null, error: "Bucket de storage não encontrado. Execute o script SQL de configuração no Supabase." };
+    }
+    if (uploadError.message.includes("row-level security") || uploadError.message.includes("policy")) {
+      return { data: null, error: "Sem permissão para fazer upload. Execute o script SQL de permissões no Supabase." };
+    }
+    return { data: null, error: `Erro ao enviar arquivo: ${uploadError.message}` };
+  }
 
   onProgress?.(80);
 
-  // Get user display name
+  // 6. Get user display name
   const displayName = user.email?.split("@")[0] ?? "Usuário";
 
-  // Insert media_posts record
+  // 7. Insert media_posts record
   const { data: post, error: postError } = await supabase
     .from("media_posts")
     .insert({
@@ -85,14 +123,21 @@ export async function uploadMedia(
     .single();
 
   if (postError) {
+    console.error("[mediaService] DB insert error:", postError);
     // Cleanup uploaded file on db error
     await supabase.storage.from(BUCKET).remove([storagePath]);
-    return { data: null, error: postError.message };
+    if (postError.message.includes("row-level security") || postError.message.includes("policy")) {
+      return { data: null, error: "Sem permissão para publicar. Execute o script SQL de permissões no Supabase." };
+    }
+    if (postError.message.includes("does not exist")) {
+      return { data: null, error: "Tabela media_posts não existe. Execute o script SQL de configuração no Supabase." };
+    }
+    return { data: null, error: `Erro ao salvar publicação: ${postError.message}` };
   }
 
   onProgress?.(100);
 
-  // Get public URL
+  // 8. Get public URL
   const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(storagePath);
 
   return {
