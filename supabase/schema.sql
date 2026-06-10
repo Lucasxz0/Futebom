@@ -134,20 +134,35 @@ CREATE TRIGGER group_member_count_trigger
 CREATE TABLE IF NOT EXISTS players (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  group_id   UUID REFERENCES groups(id) ON DELETE SET NULL,
   name       TEXT NOT NULL,
   type       TEXT NOT NULL CHECK (type IN ('permanent', 'casual')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS players_user_id_idx ON players(user_id);
+CREATE INDEX IF NOT EXISTS players_group_id_idx ON players(group_id);
 CREATE UNIQUE INDEX IF NOT EXISTS players_user_name_unique
   ON players(user_id, lower(name));
 
 ALTER TABLE players ENABLE ROW LEVEL SECURITY;
 
+-- Owner can always see their own players
 DROP POLICY IF EXISTS "players: owner select" ON players;
 CREATE POLICY "players: owner select" ON players
   FOR SELECT USING (auth.uid() = user_id);
+
+-- Group members can see players in their group (needed for match creation)
+DROP POLICY IF EXISTS "players: group select" ON players;
+CREATE POLICY "players: group select" ON players
+  FOR SELECT USING (
+    group_id IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM group_members
+      WHERE group_id = players.group_id
+        AND user_id = auth.uid()
+    )
+  );
 
 DROP POLICY IF EXISTS "players: owner insert" ON players;
 CREATE POLICY "players: owner insert" ON players

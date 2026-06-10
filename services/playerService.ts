@@ -37,7 +37,7 @@ export async function getPlayers(): Promise<{ data: Player[]; error: string | nu
 
   if (!user) return { data: [], error: "Usuário não autenticado." };
 
-  const groupId = await getActiveGroupId();
+  const groupId = getActiveGroupId();
 
   let query = supabase
     .from("players")
@@ -72,7 +72,7 @@ export async function createPlayer(
   const trimmedName = input.name.trim();
   if (!trimmedName) return { data: null, error: "Nome não pode estar vazio." };
 
-  const groupId = await getActiveGroupId();
+  const groupId = getActiveGroupId();
 
   // Check for duplicate (case-insensitive) within group or user
   let dupQuery = supabase
@@ -123,14 +123,21 @@ export async function updatePlayer(
     if (!trimmedName) return { data: null, error: "Nome não pode estar vazio." };
     input.name = trimmedName;
 
-    // Check for duplicate (excluding current player)
-    const { data: existing } = await supabase
+    // Check for duplicate (excluding current player), scoped by group or user
+    const groupId = getActiveGroupId();
+    let dupQuery = supabase
       .from("players")
       .select("id")
-      .eq("user_id", user.id)
       .ilike("name", trimmedName)
-      .neq("id", id)
-      .maybeSingle();
+      .neq("id", id);
+
+    if (groupId) {
+      dupQuery = dupQuery.eq("group_id", groupId);
+    } else {
+      dupQuery = dupQuery.eq("user_id", user.id);
+    }
+
+    const { data: existing } = await dupQuery.maybeSingle();
 
     if (existing) {
       return { data: null, error: `Já existe um jogador chamado "${trimmedName}".` };
@@ -188,12 +195,26 @@ export async function createPlayersBulk(
 
   if (!user) return { created: 0, skipped: 0, error: "Usuário não autenticado." };
 
+  // 1. Trim names and filter out too-short entries
   const trimmed = names.map((n) => n.trim()).filter((n) => n.length >= 2);
   if (trimmed.length === 0) return { created: 0, skipped: 0, error: null };
 
-  const groupId = await getActiveGroupId();
+  // 2. Deduplicate within the imported list itself (case-insensitive)
+  //    This prevents the DB constraint from failing when the same name
+  //    appears more than once in the pasted list.
+  const seenInList = new Set<string>();
+  const dedupedInput = trimmed.filter((n) => {
+    const key = n.toLowerCase();
+    if (seenInList.has(key)) return false;
+    seenInList.add(key);
+    return true;
+  });
+  // Count names that were removed as duplicates within the list itself
+  const inListDuplicates = trimmed.length - dedupedInput.length;
 
-  // Fetch existing player names (for duplicate check)
+  const groupId = getActiveGroupId();
+
+  // 3. Fetch existing player names in this scope (group or user) for duplicate check
   let existingQuery = supabase.from("players").select("name");
   if (groupId) {
     existingQuery = existingQuery.eq("group_id", groupId);
@@ -201,26 +222,51 @@ export async function createPlayersBulk(
     existingQuery = existingQuery.eq("user_id", user.id);
   }
 
-  const { data: existing } = await existingQuery;
-
+  const { data: existingPlayers } = await existingQuery;
   const existingLower = new Set(
-    (existing ?? []).map((p) => p.name.toLowerCase())
+    (existingPlayers ?? []).map((p) => p.name.toLowerCase())
   );
 
-  const toCreate = trimmed.filter((n) => !existingLower.has(n.toLowerCase()));
-  const skipped = trimmed.length - toCreate.length;
+  // 4. Filter out names that already exist in the DB
+  const toCreate = dedupedInput.filter((n) => !existingLower.has(n.toLowerCase()));
+  const skipped = inListDuplicates + (dedupedInput.length - toCreate.length);
 
   if (toCreate.length === 0) return { created: 0, skipped, error: null };
 
+  // 5. Build rows and insert using upsert with ignoreDuplicates
+  //    so the DB never rejects the whole batch if there's any leftover conflict
   const rows = toCreate.map((name) => ({
     name,
     type,
     user_id: user.id,
     ...(groupId ? { group_id: groupId } : {}),
   }));
-  const { error } = await supabase.from("players").insert(rows);
 
-  if (error) return { created: 0, skipped, error: error.message };
+  const { error } = await supabase
+    .from("players")
+    .upsert(rows, {
+      onConflict: "user_id,name",
+      ignoreDuplicates: true,
+    });
+
+  if (error) {
+    // Translate common DB errors to friendly messages
+    if (error.code === "23505" || error.message.includes("duplicate key")) {
+      return {
+        created: 0,
+        skipped: names.length,
+        error: null, // treat all as skipped — no hard failure
+      };
+    }
+    if (error.message.includes("column \"group_id\" of relation")) {
+      return {
+        created: 0,
+        skipped: 0,
+        error: "Execute o SQL de migração 'add_group_id_to_players.sql' no Supabase antes de importar.",
+      };
+    }
+    return { created: 0, skipped, error: error.message };
+  }
 
   return { created: toCreate.length, skipped, error: null };
 }
