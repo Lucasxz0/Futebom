@@ -244,10 +244,7 @@ export async function createPlayersBulk(
 
   const { error } = await supabase
     .from("players")
-    .upsert(rows, {
-      onConflict: "user_id,name",
-      ignoreDuplicates: true,
-    });
+    .insert(rows);
 
   if (error) {
     // Translate common DB errors to friendly messages
