@@ -2,31 +2,35 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { motion } from "framer-motion";
-import { Users, RefreshCw, Settings } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Users, RefreshCw, Settings, Plus } from "lucide-react";
 import { useGroup } from "@/contexts/GroupContext";
 import { getAllGroups, Group } from "@/services/groupService";
+import { createGroup } from "@/services/adminService";
 import GroupCard from "@/components/group/GroupCard";
 import GroupPasswordModal from "@/components/group/GroupPasswordModal";
+import GroupForm from "@/components/group/GroupForm";
 import SkeletonCard from "@/components/ui/SkeletonCard";
 
 export default function GroupsPage() {
   const router = useRouter();
-  const { myGroups, activeGroup, isAdmin, isLoading, handleJoinGroup, switchGroup } =
+  const { myGroups, activeGroup, isAdmin, isLoading, handleJoinGroup, switchGroup, refresh } =
     useGroup();
 
   const [allGroups, setAllGroups] = useState<Group[]>([]);
   const [loadingGroups, setLoadingGroups] = useState(true);
   const [passwordTarget, setPasswordTarget] = useState<Group | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+
+  async function load() {
+    setLoadingGroups(true);
+    const { data } = await getAllGroups();
+    setAllGroups(data);
+    setLoadingGroups(false);
+  }
 
   useEffect(() => {
-    async function load() {
-      setLoadingGroups(true);
-      const { data } = await getAllGroups();
-      setAllGroups(data);
-      setLoadingGroups(false);
-    }
     load();
   }, []);
 
@@ -64,6 +68,19 @@ export default function GroupsPage() {
     }
     setPasswordTarget(null);
     router.push("/dashboard");
+  }
+
+  async function handleCreateGroup(data: { name: string; emoji: string; description: string; password?: string }) {
+    const { error } = await createGroup({
+      name: data.name,
+      emoji: data.emoji,
+      description: data.description,
+      password: data.password || undefined,
+    });
+    if (error) throw new Error(error);
+    setShowCreateForm(false);
+    await refresh();
+    await load();
   }
 
   const myGroupIds = new Set(myGroups.map((g) => g.id));
@@ -123,6 +140,37 @@ export default function GroupsPage() {
           </motion.div>
         )}
 
+        {/* Create group section */}
+        {!showCreateForm ? (
+          <motion.button
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            onClick={() => setShowCreateForm(true)}
+            className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-[#334155] rounded-2xl py-4 text-[#64748B] hover:border-[#3B82F6] hover:text-[#3B82F6] transition-colors font-semibold text-sm"
+          >
+            <Plus size={18} />
+            Criar novo grupo
+          </motion.button>
+        ) : (
+          <AnimatePresence>
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              className="rounded-2xl border border-[#3B82F6]/40 bg-[#1E293B] p-5"
+            >
+              <p className="text-[#F1F5F9] font-bold mb-4 flex items-center gap-2">
+                <Plus size={16} className="text-[#3B82F6]" />
+                Novo grupo
+              </p>
+              <GroupForm
+                onSave={handleCreateGroup}
+                onCancel={() => setShowCreateForm(false)}
+              />
+            </motion.div>
+          </AnimatePresence>
+        )}
+
         {/* My groups section */}
         {!isLoading && myGroups.length > 0 && (
           <section>
@@ -151,12 +199,7 @@ export default function GroupsPage() {
               {myGroups.length > 0 ? "Outros grupos" : "Grupos disponíveis"}
             </h2>
             <button
-              onClick={async () => {
-                setLoadingGroups(true);
-                const { data } = await getAllGroups();
-                setAllGroups(data);
-                setLoadingGroups(false);
-              }}
+              onClick={() => load()}
               className="text-[#475569] hover:text-[#64748B] transition-colors"
             >
               <RefreshCw size={14} />
@@ -193,14 +236,6 @@ export default function GroupsPage() {
                         ? "Você já está em todos os grupos disponíveis!"
                         : "Nenhum grupo disponível ainda."}
                     </p>
-                    {isAdmin && (
-                      <button
-                        onClick={() => router.push("/admin")}
-                        className="mt-4 text-[#3B82F6] text-sm font-semibold hover:text-[#60A5FA] transition-colors"
-                      >
-                        + Criar um grupo no painel admin
-                      </button>
-                    )}
                   </div>
                 )}
             </div>
